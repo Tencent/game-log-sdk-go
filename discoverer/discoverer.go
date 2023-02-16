@@ -25,11 +25,19 @@ type EventHandler interface {
 	OnEndpointAdd(EndpointList)
 }
 
-// Discoverer is the interface of a service discoverer
-type Discoverer interface {
-	// GetEndpoints get all endpoints from the load balancer, since the discoverer will update internally,
+// EndpointProvider is the interface of an endpoint provider
+type EndpointProvider interface {
+	// GetEndpoint gets one Endpoint from the endpoint list with round-robin load balancing policy
+	GetEndpoint() (Endpoint, error)
+
+	// GetEndpoints gets all endpoints from the load balancer, since the discoverer will update internally,
 	// the caller should copy the endpoint list to its own routine space
 	GetEndpoints() EndpointList
+}
+
+// Discoverer is the interface of a service discoverer
+type Discoverer interface {
+	EndpointProvider
 
 	// AddEventHandler adds an EventHandler to the discoverer
 	AddEventHandler(h EventHandler)

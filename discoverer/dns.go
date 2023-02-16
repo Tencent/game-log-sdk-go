@@ -2,6 +2,8 @@ package discoverer
 
 import (
 	"errors"
+	"math"
+	"math/rand"
 	"net"
 	"regexp"
 	"sort"
@@ -19,7 +21,8 @@ const (
 
 // variables
 var (
-	errInvalidPort = errors.New("invalid port")
+	ErrInvalidPort         = errors.New("invalid port")
+	ErrNoAvailableEndpoint = errors.New("no available endpoints")
 )
 
 // NewDNS create a DNS discoverer
@@ -30,7 +33,7 @@ func NewDNS(domain string, port int, lookupInterval time.Duration, log logger.Lo
 	}
 
 	if port <= 0 || port > 65535 {
-		return nil, errInvalidPort
+		return nil, ErrInvalidPort
 	}
 
 	if lookupInterval == 0 {
@@ -45,6 +48,7 @@ func NewDNS(domain string, port int, lookupInterval time.Duration, log logger.Lo
 		hostListMap:    make(map[string]struct{}),
 		eventHandlers:  make(map[EventHandler]struct{}),
 		log:            logger,
+		curIndex:       rand.New(rand.NewSource(time.Now().UnixNano())).Int(),
 	}
 
 	regex := regexp.MustCompile(ipRegexp)
@@ -74,6 +78,23 @@ type dnsDiscoverer struct {
 	eventHandlers  map[EventHandler]struct{}
 	closeFunc      func()
 	log            logger.Logger
+	curIndex       int
+}
+
+func (d *dnsDiscoverer) GetEndpoint() (Endpoint, error) {
+	d.RLock()
+	defer d.RUnlock()
+
+	epLen := len(d.endpointList)
+	if epLen == 0 {
+		return Endpoint{}, ErrNoAvailableEndpoint
+	}
+
+	if d.curIndex == math.MaxInt {
+		d.curIndex = 0
+	}
+
+	return d.endpointList[d.curIndex%epLen], nil
 }
 
 func (d *dnsDiscoverer) GetEndpoints() EndpointList {

@@ -12,9 +12,8 @@ import (
 
 // const values
 const (
-	TimeFormat    = "2006-01-02 15:04:05"
-	maxUDPLogSize = 65507
-	maxTCPLogSize = 128 * 1024
+	// TimeFormat is the TGLog time format
+	TimeFormat = "2006-01-02 15:04:05"
 )
 
 // ToTGLogString converts an object into a TGLog format string.
@@ -84,17 +83,11 @@ func toString(f interface{}) string {
 
 // BytesToString without copy
 func BytesToString(bytes []byte) string {
-	// sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&bytes))
-	// stringHeader := reflect.StringHeader{Data: sliceHeader.Data, Len: sliceHeader.Len}
-	// return *(*string)(unsafe.Pointer(&stringHeader))
 	return *(*string)(unsafe.Pointer(&bytes))
 }
 
 // StringToBytes without copy
 func StringToBytes(str string) []byte {
-	// stringHeader := (*reflect.StringHeader)(unsafe.Pointer(&str))
-	// sliceHeader := reflect.SliceHeader{Data: stringHeader.Data, Len: stringHeader.Len, Cap: stringHeader.Len}
-	// return *(*[]byte)(unsafe.Pointer(&sliceHeader))
 	x := (*[2]uintptr)(unsafe.Pointer(&str))
 	h := [3]uintptr{x[0], x[1], x[1]}
 	return *(*[]byte)(unsafe.Pointer(&h))
