@@ -3,11 +3,12 @@ package tglog
 import (
 	"context"
 	"errors"
-	"git.woa.com/tglog/v3/sdk-go/bufferpool"
-	"github.com/prometheus/client_golang/prometheus"
 	"net"
 	"sync/atomic"
 	"time"
+
+	"git.woa.com/tglog/v3/sdk-go/bufferpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"git.woa.com/tglog/v3/sdk-go/connpool"
 	"github.com/panjf2000/gnet/v2"
@@ -25,19 +26,23 @@ const (
 
 // variables
 var (
-	ErrInvalidHost = errors.New("invalid host")
-	ErrInvalidPort = errors.New("invalid port")
+	ErrInvalidHost        = errors.New("invalid host")
+	ErrInvalidPort        = errors.New("invalid port")
+	ErrInvalidNetwork     = errors.New("invalid network")
+	ErrV3TCPNoFrameHeader = errors.New("NoFrameHeader it must be false when codec is V3 and network is TCP")
+	ErrV3CENoFrameHeader  = errors.New("NoFrameHeader it must be false when codec is V3 and compress or encrypt is true")
+	ErrInvalidEncryptKey  = errors.New("invalid encrypt key")
 )
 
-// Callback is the callback func that will be called when Client finish sending the logger
-type Callback func(log string, err error)
+// Callback is the callback func that will be called when Client finish sending the message
+type Callback func(msg *Message, err error)
 
 // Client is the interface of a TGLog netClient
 type Client interface {
-	// Send sends the log synchronously
-	Send(ctx context.Context, log string) error
+	// Send sends the msg synchronously
+	Send(ctx context.Context, msg *Message) error
 	// SendAsync sends the log asynchronously, if cb is not nil, it will be called after the log is sent.
-	SendAsync(ctx context.Context, log string, cb Callback)
+	SendAsync(ctx context.Context, msg *Message, cb Callback)
 	// Close closes the netClient
 	Close()
 }
@@ -50,10 +55,8 @@ type client struct {
 	netClient                *gnet.Client          // 多路复用管理器
 	workers                  []*worker             // 工作者
 	curWorkerIndex           atomic.Uint64         // 当前工作者
-	bufferPool               bufferpool.BufferPool //
-	bytePool                 bufferpool.BytePool   //
 	log                      logger.Logger         // 日志
-	metrics                  *metrics              //
+	metrics                  *metrics              // 指标
 }
 
 // NewClient news a TGLog client
@@ -64,6 +67,7 @@ func NewClient(opts ...Option) (Client, error) {
 		Codec:                   CodecV1,
 		BatchingMaxMessages:     10,
 		BatchingMaxPublishDelay: 10 * time.Millisecond,
+		SendTimeout:             10 * time.Second,
 		BatchingMaxSize:         4096,
 		MaxPendingMessages:      40960,
 		WorkerNum:               4,
@@ -75,21 +79,26 @@ func NewClient(opts ...Option) (Client, error) {
 	}
 
 	if options.Host == "" {
+		// 未指定服务器域名
 		return nil, ErrInvalidHost
 	}
 	if options.Port == 0 {
+		// 未指定服务器端口
 		return nil, ErrInvalidPort
 	}
 	if options.WorkerNum <= 0 {
 		options.WorkerNum = 4
 	}
 	if options.MetricsName == "" {
+		// 指标名，如果一个进程初始化多个client，又用这个默认的指标名，会导致prometheus查不到数据
 		options.MetricsName = "tglog-go"
 	}
 	if options.MetricsRegistry == nil {
+		// 指标存储器，如果没有指定，用默认的
 		options.MetricsRegistry = prometheus.DefaultRegisterer
 	}
 	if options.Codec == CodecV1 {
+		options.isV1 = true
 		if options.BatchingMaxSize > maxUDPReqSizeV1 && isUDP(options.Network) {
 			options.BatchingMaxSize = maxUDPReqSizeV1
 		}
@@ -98,6 +107,7 @@ func NewClient(opts ...Option) (Client, error) {
 		}
 	}
 	if options.Codec == CodecV3 {
+		options.isV3 = true
 		if options.BatchingMaxSize > maxUDPReqSizeV3 && isUDP(options.Network) {
 			options.BatchingMaxSize = maxUDPReqSizeV3
 		}
@@ -121,6 +131,28 @@ func NewClient(opts ...Option) (Client, error) {
 		options.BytePool = bufferpool.NewBytePool(options.BytePoolSize, options.BytePoolWidth)
 	}
 
+	options.isUDP = isUDP(options.Network)
+	options.isTCP = isTCP(options.Network)
+	if !options.isUDP && !options.isTCP {
+		return nil, ErrInvalidNetwork
+	}
+	if !options.isV1 && !options.isV3 {
+		return nil, ErrInvalidNetwork
+	}
+	if options.NoFrameHeader && options.isV3 {
+		// V3协议用TCP传输必须有帧头
+		if options.isTCP {
+			return nil, ErrV3TCPNoFrameHeader
+		}
+		// V3协议启用了加密或者压缩必须有协议头
+		if options.Encrypt || options.Compress {
+			return nil, ErrV3CENoFrameHeader
+		}
+	}
+	if options.Encrypt && options.EncryptKey == "" {
+		return nil, ErrInvalidEncryptKey
+	}
+
 	// create discoverer
 	discoverer, err := discoverer.NewDNS(options.Host, options.Port, 30*time.Second, options.Logger)
 	if err != nil {
@@ -136,18 +168,38 @@ func NewClient(opts ...Option) (Client, error) {
 	cli := &client{
 		options:    options,
 		discoverer: discoverer,
-		connPool:   connpool.NewConnPool(256), // 256 is enough
+		connPool:   connpool.NewConnPool(256), // as a client, 256 is enough
 		log:        options.Logger,
 		workers:    make([]*worker, 0, options.WorkerNum),
-		bufferPool: options.BufferPool,
-		bytePool:   options.BytePool,
 		metrics:    metrics,
 	}
+
+	// listen on discoverer events
+	cli.discoverer.AddEventHandler(cli)
 
 	// net client handle IO
 	netClient, err := gnet.NewClient(cli, gnet.WithLogger(options.Logger))
 	if err != nil {
 		return nil, err
+	}
+
+	// save net client
+	cli.netClient = netClient
+
+	// init connections
+	initConns := make([]net.Conn, 0)
+	for i := 0; i < cli.options.WorkerNum+4; i++ {
+		conn, err := cli.getConn()
+		if err != nil {
+			_ = cli.netClient.Stop()
+			cli.discoverer.Close()
+			return nil, err
+		}
+
+		initConns = append(initConns, conn)
+	}
+	for _, conn := range initConns {
+		cli.putConn(conn)
 	}
 
 	// create workers
@@ -161,11 +213,6 @@ func NewClient(opts ...Option) (Client, error) {
 		cli.workers = append(cli.workers, w)
 	}
 
-	// save net client
-	cli.netClient = netClient
-	// listen on discoverer events
-	cli.discoverer.AddEventHandler(cli)
-
 	return cli, nil
 }
 
@@ -178,14 +225,14 @@ func (c *client) Dial() (net.Conn, error) {
 	return c.netClient.Dial(c.options.Network, ep.Addr)
 }
 
-func (c *client) Send(ctx context.Context, log string) error {
+func (c *client) Send(ctx context.Context, msg *Message) error {
 	worker := c.getWorker()
-	return worker.send(ctx, []byte(log))
+	return worker.send(ctx, msg)
 }
 
-func (c *client) SendAsync(ctx context.Context, log string, cb Callback) {
+func (c *client) SendAsync(ctx context.Context, msg *Message, cb Callback) {
 	worker := c.getWorker()
-	worker.sendAsync(ctx, []byte(log), cb)
+	worker.sendAsync(ctx, msg, cb)
 }
 
 func (c *client) getWorker() *worker {
@@ -245,7 +292,7 @@ func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
 }
 
 func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
-	c.log.Debug("data received")
+	c.log.Debug("msg received")
 	// todo 处理响应
 	return
 }

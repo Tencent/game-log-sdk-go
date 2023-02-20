@@ -94,7 +94,9 @@ func (d *dnsDiscoverer) GetEndpoint() (Endpoint, error) {
 		d.curIndex = 0
 	}
 
-	return d.endpointList[d.curIndex%epLen], nil
+	ep := d.endpointList[d.curIndex%epLen]
+	d.curIndex++
+	return ep, nil
 }
 
 func (d *dnsDiscoverer) GetEndpoints() EndpointList {

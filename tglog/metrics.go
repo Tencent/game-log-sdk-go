@@ -2,8 +2,9 @@ package tglog
 
 import (
 	"errors"
-	"github.com/prometheus/client_golang/prometheus"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type metrics struct {

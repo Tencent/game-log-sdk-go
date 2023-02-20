@@ -16,6 +16,7 @@ func (el EndpointList) Addresses() []string {
 	for _, endpoint := range el {
 		addrs = append(addrs, endpoint.Addr)
 	}
+	
 	return addrs
 }
 

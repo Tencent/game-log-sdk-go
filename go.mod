@@ -3,13 +3,17 @@ module git.woa.com/tglog/v3/sdk-go
 go 1.17
 
 require (
+	git.woa.com/tglog/v3/proto v0.1.0
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofrs/uuid v4.4.0+incompatible
+	github.com/gogo/protobuf v1.3.2
+	github.com/klauspost/compress v1.15.15
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/panjf2000/gnet/v2 v2.2.5
 	github.com/prometheus/client_golang v1.14.0
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
 	go.uber.org/atomic v1.10.0
+	google.golang.org/protobuf v1.28.1
 )
 
 require (
@@ -23,6 +27,5 @@ require (
 	go.uber.org/multierr v1.8.0 // indirect
 	go.uber.org/zap v1.21.0 // indirect
 	golang.org/x/sys v0.3.0 // indirect
-	google.golang.org/protobuf v1.28.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 )

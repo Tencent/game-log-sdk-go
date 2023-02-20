@@ -19,7 +19,7 @@
 // this file is copied from https://github.com/apache/pulsar-client-go/blob/master/pulsar/internal/semaphore.go
 //
 
-package tglog
+package syncx
 
 import (
 	"context"

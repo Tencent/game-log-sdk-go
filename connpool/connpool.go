@@ -53,6 +53,7 @@ func (p *connPool) NumPooled() int {
 	return len(p.pool)
 }
 
+// CloseConn closes a connection after a duration of time
 func CloseConn(conn net.Conn, after time.Duration) {
 	if after <= 0 {
 		conn.Close()
