@@ -3,10 +3,11 @@ package tglog
 import (
 	"bytes"
 	"context"
-	"git.woa.com/tglog/v3/sdk-go/syncx"
 	"strconv"
 	"strings"
 	"time"
+
+	"git.woa.com/tglog/v3/sdk-go/syncx"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"git.woa.com/tglog/v3/sdk-go/util"
@@ -117,7 +118,9 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.AppName,
 			b.options.AppVer,
 			b.options.Network, messages, nil, nil)
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 
 		return EncodeV3Req(
 			req,

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
+
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -57,6 +59,7 @@ type client struct {
 	curWorkerIndex           atomic.Uint64         // 当前工作者
 	log                      logger.Logger         // 日志
 	metrics                  *metrics              // 指标
+	framer                   framer                // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
 }
 
 // NewClient news a TGLog client
@@ -72,6 +75,9 @@ func NewClient(opts ...Option) (Client, error) {
 		MaxPendingMessages:      40960,
 		WorkerNum:               4,
 		Logger:                  logger.Std(),
+		FieldOffset:             2,
+		FieldLength:             4,
+		Adjustment:              -6,
 	}
 
 	for _, o := range opts {
@@ -172,6 +178,21 @@ func NewClient(opts ...Option) (Client, error) {
 		log:        options.Logger,
 		workers:    make([]*worker, 0, options.WorkerNum),
 		metrics:    metrics,
+	}
+
+	if options.isTCP && options.isV3 {
+		framer, err := newLengthField(lengthFieldCfg{
+			maxFrameLen:  options.MaxFrameLen,
+			fieldOffset:  options.FieldOffset,
+			fieldLength:  options.FieldLength,
+			adjustment:   options.Adjustment,
+			bytesToStrip: options.BytesToStrip,
+		})
+		if err != nil {
+			cli.discoverer.Close()
+			return nil, err
+		}
+		cli.framer = framer
 	}
 
 	// listen on discoverer events
@@ -294,7 +315,77 @@ func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
 func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 	c.log.Debug("msg received")
 	// todo 处理响应
-	return
+	if !c.options.isV3 {
+		return
+	}
+
+	if c.options.isUDP {
+		frame, err := conn.Next(-1)
+		if err != nil {
+			return gnet.Close
+		}
+		c.onResponse(frame)
+		return gnet.None
+	}
+
+	for {
+		total := conn.InboundBuffered()
+		buf, _ := conn.Peek(total)
+
+		length, payloadOffset, payloadOffsetEnd, err := c.framer.readFrame(buf)
+		if err == errIncompleteFrame {
+			break
+		}
+
+		if err != nil {
+			c.metrics.incError(errCodeConnReadFailed)
+			c.log.Error("invalid packet from stream connection, close it, err:", err)
+			// 读失败，关闭连接
+			return gnet.Close
+		}
+
+		frame, _ := conn.Peek(length)
+		_, err = conn.Discard(length)
+		if err != nil {
+			c.metrics.incError(errCodeConnReadFailed)
+			c.log.Error("discard connection stream failed, err", err)
+			// 读失败，关闭连接
+			return gnet.Close
+		}
+
+		// 处理数据
+		c.onResponse(frame[payloadOffset:payloadOffsetEnd])
+
+	}
+	return gnet.None
+}
+
+func (c *client) onResponse(frame []byte) {
+	rsp, err := DecodeV3Rsp(
+		frame,
+		c.options.NoFrameHeader,
+		false,
+		c.options.HandlerBytesToTrip,
+		c.options.EncryptKey,
+		c.options.BytePool)
+	if err != nil {
+		return
+	}
+	switch r := rsp.Rsp.(type) {
+	case *v3.Rsp_HeartbeatRsp:
+		_ = r
+		return
+	case *v3.Rsp_LogRsp:
+		_ = r
+		batchID := rsp.Header.ReqID
+		index := getWorkerIndex(batchID)
+		if index < 0 || index >= len(c.workers) {
+			return
+		}
+		c.workers[index].onRsp(batchRsp{batchID: batchID})
+	default:
+		return
+	}
 }
 
 func (c *client) OnEndpointDel(endpoints discoverer.EndpointList) {

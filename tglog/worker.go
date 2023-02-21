@@ -3,11 +3,11 @@ package tglog
 import (
 	"context"
 	"errors"
-	"git.woa.com/tglog/v3/sdk-go/syncx"
 	"net"
 	"strconv"
-	"sync"
 	"time"
+
+	"git.woa.com/tglog/v3/sdk-go/syncx"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"git.woa.com/tglog/v3/sdk-go/logger"
@@ -49,7 +49,6 @@ var (
 	errCodeConnWriteFailed = "10008"
 	errCodeConnReadFailed  = "10009"
 	errCodeUnknown         = "20001"
-	rspPool                *sync.Pool
 )
 
 func getErrorCode(err error) string {
@@ -78,11 +77,6 @@ func getErrorCode(err error) string {
 }
 
 func init() {
-	rspPool = &sync.Pool{
-		New: func() interface{} {
-			return &batchRsp{}
-		},
-	}
 }
 
 type worker struct {
@@ -99,7 +93,7 @@ type worker struct {
 	pendingBatches     map[string]*batchReq  // 待发送批次
 	unackedBatches     map[string]*batchReq  // 待确认批次
 	retryBatches       chan *batchReq        // 重试管道
-	responseBatches    chan *batchRsp        // 响应管道
+	responseBatches    chan batchRsp         // 响应管道
 	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
 	sendTimeoutTicker  *time.Ticker          // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
 	heartbeatTicker    *time.Ticker          // 心跳定时器
@@ -122,7 +116,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
-		responseBatches:    make(chan *batchRsp, opts.MaxPendingMessages),
+		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
 		sendTimeoutTicker:  time.NewTicker(opts.SendTimeout),
 		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
@@ -426,11 +420,14 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	w.getConn().Write(bytes)
+	_, _ = w.getConn().Write(bytes)
 }
 
-func (w *worker) handleRsp(rsp *batchRsp) {
-	defer rspPool.Put(rsp)
+func (w *worker) onRsp(rsp batchRsp) {
+	w.responseBatches <- rsp
+}
+
+func (w *worker) handleRsp(rsp batchRsp) {
 	batchID := rsp.batchID
 	batch, ok := w.unackedBatches[batchID]
 	if !ok {

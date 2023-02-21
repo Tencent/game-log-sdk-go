@@ -24,7 +24,7 @@ type Message struct {
 	Name     string            // 事件名/日志名
 	Payload  []byte            // 内容
 	Headers  map[string]string // 消息头，预留，目前不会发到服务器
-	Metadata interface{}       // 可以携带任意数据，这些数据不会发到服务器，可以在回调中获取，方便应用层存储一些上下文
+	MetaData interface{}       // 可以携带任意数据，这些数据不会发到服务器，可以在回调中获取，方便应用层存储一些上下文
 }
 
 // ParseMessages parses a byte slice into Message slice,

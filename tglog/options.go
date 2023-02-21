@@ -55,6 +55,13 @@ type Options struct {
 	isV3                    bool                  // 是否V3协议，内部使用
 	isUDP                   bool                  // 是否UDP，内部使用
 	isTCP                   bool                  // 是否TCP，内部使用
+	LittleEndian            bool                  // 是否小端字节序，默认false
+	MaxFrameLen             int                   // 最大帧长，单位字节，默认：64K
+	FieldOffset             int                   // 长度字段在一个帧中的位移，默认：2
+	FieldLength             int                   // 长度字段占用字节数，默认：4
+	Adjustment              int                   // 计算帧长度时的修正值，可以正可以负：默认：-6
+	BytesToStrip            int                   // 分帧时需要截掉的字节数，只在解码的时候有用，获取帧长度时没用，默认：0
+	HandlerBytesToTrip      int                   // 将一帧数据解码为应用层协议数据时需要截掉的字节数，默认：10，截掉V3协议的10个字节帧头
 }
 
 // Option is the Options helper.

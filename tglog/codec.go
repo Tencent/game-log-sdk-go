@@ -5,6 +5,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand"
+	"runtime"
+	"time"
+
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"git.woa.com/tglog/v3/sdk-go/crypto"
@@ -13,9 +17,6 @@ import (
 	"github.com/klauspost/compress/snappy"
 	"go.uber.org/atomic"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"math/rand"
-	"runtime"
-	"time"
 )
 
 var (

@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"git.woa.com/tglog/v3/sdk-go/tglog"
 	"time"
+
+	"git.woa.com/tglog/v3/sdk-go/tglog"
 )
 
 func main() {
