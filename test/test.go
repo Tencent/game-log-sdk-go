@@ -9,10 +9,10 @@ import (
 )
 
 func main() {
-	client, err := tglog.NewClient(
-		tglog.WithNetwork("udp"),
+	client, err := tglog.NewV3Client(
+		tglog.WithNetwork("tcp"),
 		tglog.WithHost("dev.tglog.com"),
-		tglog.WithPort(20001),
+		tglog.WithPort(20004),
 	)
 
 	if err != nil {
@@ -30,4 +30,5 @@ func main() {
 	time.Sleep(3 * time.Second)
 	client.Close()
 	time.Sleep(3 * time.Second)
+
 }

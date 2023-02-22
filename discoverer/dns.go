@@ -40,7 +40,7 @@ func NewDNS(domain string, port int, lookupInterval time.Duration, log logger.Lo
 		lookupInterval = 30 * time.Second
 	}
 
-	lb := &dnsDiscoverer{
+	dis := &dnsDiscoverer{
 		domain:         domain,
 		port:           port,
 		lookupInterval: lookupInterval,
@@ -55,16 +55,16 @@ func NewDNS(domain string, port int, lookupInterval time.Duration, log logger.Lo
 	// input domain is an IP
 	if regex.MatchString(domain) {
 		ip := net.ParseIP(domain)
-		lb.endpointList = []Endpoint{{Host: ip.String(), Port: port, Addr: buildAddr(ip.String(), port)}}
-		lb.hostListStr = ip.String()
+		dis.endpointList = []Endpoint{{Host: ip.String(), Port: port, Addr: buildAddr(ip.String(), port)}}
+		dis.hostListStr = ip.String()
 
-		return lb, nil
+		return dis, nil
 	}
 
 	// domain
-	lb.lookup()
-	lb.update()
-	return lb, nil
+	dis.lookup()
+	dis.update()
+	return dis, nil
 }
 
 type dnsDiscoverer struct {
@@ -127,6 +127,7 @@ func (d *dnsDiscoverer) Close() {
 }
 
 func (d *dnsDiscoverer) lookup() {
+
 	hosts := make(map[string]struct{}, 16)
 	for i := 1; i <= 32; i++ {
 		lookupHosts, err := net.LookupHost(d.domain)
@@ -184,6 +185,7 @@ func (d *dnsDiscoverer) lookup() {
 	d.Unlock()
 
 	// show this logger only in case of ip list change
+	// only ticker will update d.hostListStr, lock is unnecessary
 	sort.Strings(hostList)
 	hostListStr := strings.Join(hostList, ";")
 	if hostListStr != d.hostListStr {

@@ -117,10 +117,16 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.AppID,
 			b.options.AppName,
 			b.options.AppVer,
-			b.options.Network, messages, nil, nil)
+			b.options.Network,
+			b.batchID,
+			messages,
+			nil,
+			nil)
 		if err != nil {
 			return nil, err
 		}
+
+		// fmt.Println(req.String())
 
 		return EncodeV3Req(
 			req,

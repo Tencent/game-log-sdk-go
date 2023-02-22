@@ -330,10 +330,15 @@ func (w *worker) handleSendData(req *sendDataReq) {
 func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// w.log.Debug("worker[", w.index, "] sendBatch")
 	b.lastSendTime = time.Now()
-	b.encode()
+	_, err := b.encode()
+	if err != nil {
+		b.done(err)
+		return
+	}
+
 	conn := w.getConn()
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
-	_, err := conn.Write(b.buffer.Bytes())
+	_, err = conn.Write(b.buffer.Bytes())
 	if err != nil {
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send batch failed, error", err)
@@ -399,6 +404,7 @@ func (w *worker) handleCleanMap() {
 }
 
 func (w *worker) handleSendHeartbeat() {
+	// w.log.Debug("worker[", w.index, "] handleSendHeartbeat")
 	if w.options.isV1 {
 		return
 	}

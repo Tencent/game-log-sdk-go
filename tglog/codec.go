@@ -25,7 +25,7 @@ var (
 	language   = runtime.Version()
 	sdkVersion = "v0.1.0"
 	sequence   atomic.Uint64
-	protoVer   = fmt.Sprintf("%s.%s.%s", v3.ProtoVer_MAJOR, v3.ProtoVer_MINOR, v3.ProtoVer_PATCH)
+	protoVer   = fmt.Sprintf("%d.%d.%d", v3.ProtoVer_MAJOR, v3.ProtoVer_MINOR, v3.ProtoVer_PATCH)
 )
 
 func init() {
@@ -87,7 +87,7 @@ func BuildV3HeartbeatReq(appID, appName, appVer, network string) (*v3.Req, error
 }
 
 // BuildV3LogReq builds a TGLog v3 log request
-func BuildV3LogReq(appID, appName, appVer, network string, messages []*Message,
+func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []*Message,
 	labels map[string]string, annotations map[string]string) (*v3.Req, error) {
 	if len(messages) == 0 {
 		return nil, errors.New("input message slice is empty")
@@ -125,7 +125,7 @@ func BuildV3LogReq(appID, appName, appVer, network string, messages []*Message,
 				ProtoVer: protoVer,
 				HostIP:   localIP,
 			},
-			ReqID: ts.String(),
+			ReqID: reqID,
 			Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
 			Token: "", // todo token
 			Sig:   "", // todo sig
@@ -160,8 +160,8 @@ func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey 
 
 	var flags uint8
 	var payload = reqPayload
-	// 先压缩
-	if compress {
+	// 先压缩，大于512字节再压缩
+	if compress && len(payload) > 512 {
 		flags = flags | uint8(v3.Flag_FLAG_COMPRESSED)
 		payload = snappy.Encode(nil, payload)
 	}

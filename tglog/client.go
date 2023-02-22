@@ -7,10 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	v3 "git.woa.com/tglog/v3/proto/pbgo"
-
-	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"github.com/prometheus/client_golang/prometheus"
+
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
 	"git.woa.com/tglog/v3/sdk-go/connpool"
 	"github.com/panjf2000/gnet/v2"
@@ -31,8 +30,9 @@ var (
 	ErrInvalidHost        = errors.New("invalid host")
 	ErrInvalidPort        = errors.New("invalid port")
 	ErrInvalidNetwork     = errors.New("invalid network")
-	ErrV3TCPNoFrameHeader = errors.New("NoFrameHeader it must be false when codec is V3 and network is TCP")
-	ErrV3CENoFrameHeader  = errors.New("NoFrameHeader it must be false when codec is V3 and compress or encrypt is true")
+	ErrInvalidProtoVer    = errors.New("invalid protocol version")
+	ErrV3TCPNoFrameHeader = errors.New("NoFrameHeader it must be false when protocol is V3 and network is TCP")
+	ErrV3CENoFrameHeader  = errors.New("NoFrameHeader it must be false when protocol is V3 and compress or encrypt is true")
 	ErrInvalidEncryptKey  = errors.New("invalid encrypt key")
 )
 
@@ -62,179 +62,243 @@ type client struct {
 	framer                   framer                // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
 }
 
-// NewClient news a TGLog client
-func NewClient(opts ...Option) (Client, error) {
-	// default options
+// NewV1Client news a TGLog client that use UDP network and V1 proto
+func NewV1Client(opts ...Option) (Client, error) {
+	// default v1 options
 	options := &Options{
 		Network:                 "udp",
-		Codec:                   CodecV1,
-		BatchingMaxMessages:     10,
+		WorkerNum:               4,
 		BatchingMaxPublishDelay: 10 * time.Millisecond,
-		SendTimeout:             10 * time.Second,
+		BatchingMaxMessages:     10,
 		BatchingMaxSize:         4096,
 		MaxPendingMessages:      40960,
-		WorkerNum:               4,
+		ConnTimeout:             3 * time.Second,
+		BufferPoolSize:          40960,
+		BytePoolSize:            40960,
+		BytePoolWidth:           4096,
 		Logger:                  logger.Std(),
-		FieldOffset:             2,
-		FieldLength:             4,
-		Adjustment:              -6,
+		MetricsName:             "tglog-go",
+		MetricsRegistry:         prometheus.DefaultRegisterer,
+		isV1:                    true,
+		isUDP:                   true,
 	}
 
 	for _, o := range opts {
 		o(options)
 	}
 
-	if options.Host == "" {
-		// 未指定服务器域名
-		return nil, ErrInvalidHost
-	}
-	if options.Port == 0 {
-		// 未指定服务器端口
-		return nil, ErrInvalidPort
-	}
-	if options.WorkerNum <= 0 {
-		options.WorkerNum = 4
-	}
-	if options.MetricsName == "" {
-		// 指标名，如果一个进程初始化多个client，又用这个默认的指标名，会导致prometheus查不到数据
-		options.MetricsName = "tglog-go"
-	}
-	if options.MetricsRegistry == nil {
-		// 指标存储器，如果没有指定，用默认的
-		options.MetricsRegistry = prometheus.DefaultRegisterer
-	}
-	if options.Codec == CodecV1 {
-		options.isV1 = true
-		if options.BatchingMaxSize > maxUDPReqSizeV1 && isUDP(options.Network) {
-			options.BatchingMaxSize = maxUDPReqSizeV1
-		}
-		if options.BatchingMaxSize > maxTCPReqSizeV1 && isTCP(options.Network) {
-			options.BatchingMaxSize = maxTCPReqSizeV1
-		}
-	}
-	if options.Codec == CodecV3 {
-		options.isV3 = true
-		if options.BatchingMaxSize > maxUDPReqSizeV3 && isUDP(options.Network) {
-			options.BatchingMaxSize = maxUDPReqSizeV3
-		}
-		if options.BatchingMaxSize > maxTCPReqSizeV3 && isTCP(options.Network) {
-			options.BatchingMaxSize = maxTCPReqSizeV3
-		}
-	}
-	if options.BufferPoolSize <= 0 {
-		options.BufferPoolSize = 4096
-	}
-	if options.BytePoolSize <= 0 {
-		options.BytePoolSize = 4096
-	}
-	if options.BytePoolWidth <= 0 {
-		options.BytePoolWidth = options.BatchingMaxSize
-	}
-	if options.BufferPool == nil {
-		options.BufferPool = bufferpool.NewBuffer(options.BufferPoolSize)
-	}
-	if options.BytePool == nil {
-		options.BytePool = bufferpool.NewBytePool(options.BytePoolSize, options.BytePoolWidth)
-	}
-
-	options.isUDP = isUDP(options.Network)
-	options.isTCP = isTCP(options.Network)
-	if !options.isUDP && !options.isTCP {
-		return nil, ErrInvalidNetwork
-	}
-	if !options.isV1 && !options.isV3 {
-		return nil, ErrInvalidNetwork
-	}
-	if options.NoFrameHeader && options.isV3 {
-		// V3协议用TCP传输必须有帧头
-		if options.isTCP {
-			return nil, ErrV3TCPNoFrameHeader
-		}
-		// V3协议启用了加密或者压缩必须有协议头
-		if options.Encrypt || options.Compress {
-			return nil, ErrV3CENoFrameHeader
-		}
-	}
-	if options.Encrypt && options.EncryptKey == "" {
-		return nil, ErrInvalidEncryptKey
-	}
-
-	// create discoverer
-	discoverer, err := discoverer.NewDNS(options.Host, options.Port, 30*time.Second, options.Logger)
-	if err != nil {
-		return nil, err
-	}
-
-	metrics, err := newMetrics(options.MetricsName, options.MetricsRegistry)
+	err := options.ValidateAndSetDefault()
 	if err != nil {
 		return nil, err
 	}
 
 	// the client struct
 	cli := &client{
-		options:    options,
-		discoverer: discoverer,
-		connPool:   connpool.NewConnPool(256), // as a client, 256 is enough
-		log:        options.Logger,
-		workers:    make([]*worker, 0, options.WorkerNum),
-		metrics:    metrics,
+		options: options,
+		log:     options.Logger,
 	}
 
-	if options.isTCP && options.isV3 {
-		framer, err := newLengthField(lengthFieldCfg{
-			maxFrameLen:  options.MaxFrameLen,
-			fieldOffset:  options.FieldOffset,
-			fieldLength:  options.FieldLength,
-			adjustment:   options.Adjustment,
-			bytesToStrip: options.BytesToStrip,
-		})
-		if err != nil {
-			cli.discoverer.Close()
-			return nil, err
-		}
-		cli.framer = framer
+	err = cli.initAll()
+	if err != nil {
+		cli.Close()
+		return nil, err
 	}
 
-	// listen on discoverer events
-	cli.discoverer.AddEventHandler(cli)
+	err = cli.netClient.Start()
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
 
-	// net client handle IO
-	netClient, err := gnet.NewClient(cli, gnet.WithLogger(options.Logger))
+	return cli, nil
+}
+
+// NewV3Client news a TGLog client that use UDP network and V3 proto
+func NewV3Client(opts ...Option) (Client, error) {
+	// default options
+	options := &Options{
+		Network:                 "udp",
+		WorkerNum:               4,
+		BatchingMaxPublishDelay: 10 * time.Millisecond,
+		BatchingMaxMessages:     10,
+		BatchingMaxSize:         4096,
+		MaxPendingMessages:      40960,
+		ConnTimeout:             3 * time.Second,
+		BufferPoolSize:          40960,
+		BytePoolSize:            40960,
+		BytePoolWidth:           4096,
+		Logger:                  logger.Std(),
+		MetricsName:             "tglog-go",
+		MetricsRegistry:         prometheus.DefaultRegisterer,
+		isV3:                    true,
+		isUDP:                   true,
+		SendTimeout:             10 * time.Second,
+		MaxRetries:              2,
+		Compress:                true,
+		MaxFrameLen:             64 * 1024,
+		LenFieldOffset:          2,
+		LenFieldLength:          4,
+		LenAdjustment:           -6,
+		FrameBytesToStrip:       0,
+		PayloadBytesToTrip:      10,
+	}
+
+	for _, o := range opts {
+		o(options)
+	}
+
+	err := options.ValidateAndSetDefault()
 	if err != nil {
 		return nil, err
 	}
 
-	// save net client
-	cli.netClient = netClient
+	// the client struct
+	cli := &client{
+		options: options,
+		log:     options.Logger,
+	}
 
-	// init connections
+	err = cli.initAll()
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
+
+	err = cli.netClient.Start()
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
+
+	return cli, nil
+}
+
+func (c *client) initAll() error {
+	// 以下初始化的顺序不能乱
+	err := c.initDiscoverer()
+	if err != nil {
+		return err
+	}
+
+	err = c.initNetClient()
+	if err != nil {
+		return err
+	}
+
+	err = c.initConns()
+	if err != nil {
+		return err
+	}
+
+	err = c.initFramer()
+	if err != nil {
+		return err
+	}
+
+	err = c.initMetrics()
+	if err != nil {
+		return err
+	}
+
+	err = c.initWorkers()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *client) initDiscoverer() error {
+	dis, err := discoverer.NewDNS(c.options.Host, c.options.Port, 30*time.Second, c.options.Logger)
+	if err != nil {
+		return err
+	}
+
+	c.discoverer = dis
+	dis.AddEventHandler(c)
+	return nil
+}
+
+func (c *client) initNetClient() error {
+	netClient, err := gnet.NewClient(
+		c,
+		gnet.WithLogger(c.options.Logger),
+		gnet.WithWriteBufferCap(c.options.WriteBufferSize),
+		gnet.WithReadBufferCap(c.options.ReadBufferSize),
+		gnet.WithSocketSendBuffer(c.options.SocketSendBufferSize),
+		gnet.WithSocketRecvBuffer(c.options.SocketRecvBufferSize))
+	if err != nil {
+		return err
+	}
+
+	// save net client
+	c.netClient = netClient
+	return nil
+}
+
+func (c *client) initConns() error {
+	// as a client, 256 is enough
+	c.connPool = connpool.NewConnPool(256)
+
+	// create some conns and then put them back to the pool
 	initConns := make([]net.Conn, 0)
-	for i := 0; i < cli.options.WorkerNum+4; i++ {
-		conn, err := cli.getConn()
+	for i := 0; i < c.options.WorkerNum+4; i++ {
+		conn, err := c.getConn()
 		if err != nil {
-			_ = cli.netClient.Stop()
-			cli.discoverer.Close()
-			return nil, err
+			return err
 		}
 
 		initConns = append(initConns, conn)
 	}
+
 	for _, conn := range initConns {
-		cli.putConn(conn)
+		c.putConn(conn)
 	}
 
-	// create workers
-	for i := 0; i < options.WorkerNum; i++ {
-		w, err := cli.createWorker(i)
+	return nil
+}
+
+func (c *client) initFramer() error {
+	if !c.options.isV3 || !c.options.isTCP {
+		return nil
+	}
+
+	framer, err := newLengthField(lengthFieldCfg{
+		maxFrameLen:  c.options.MaxFrameLen,
+		fieldOffset:  c.options.LenFieldOffset,
+		fieldLength:  c.options.LenFieldLength,
+		adjustment:   c.options.LenAdjustment,
+		bytesToStrip: c.options.FrameBytesToStrip,
+	})
+	if err != nil {
+		return err
+	}
+
+	c.framer = framer
+	return nil
+}
+
+func (c *client) initWorkers() error {
+	c.workers = make([]*worker, 0, c.options.WorkerNum)
+	for i := 0; i < c.options.WorkerNum; i++ {
+		w, err := c.createWorker(i)
 		if err != nil {
-			_ = cli.netClient.Stop()
-			cli.discoverer.Close()
-			return nil, err
+			return err
 		}
-		cli.workers = append(cli.workers, w)
+		c.workers = append(c.workers, w)
 	}
 
-	return cli, nil
+	return nil
+}
+
+func (c *client) initMetrics() error {
+	m, err := newMetrics(c.options.MetricsName, c.options.MetricsRegistry)
+	if err != nil {
+		return err
+	}
+
+	c.metrics = m
+	return nil
 }
 
 func (c *client) Dial() (net.Conn, error) {
@@ -313,8 +377,7 @@ func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
 }
 
 func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
-	c.log.Debug("msg received")
-	// todo 处理响应
+	// c.log.Debug("response received")
 	if !c.options.isV3 {
 		return
 	}
@@ -322,6 +385,7 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 	if c.options.isUDP {
 		frame, err := conn.Next(-1)
 		if err != nil {
+			c.log.Error("read UDP response failed, err:", err)
 			return gnet.Close
 		}
 		c.onResponse(frame)
@@ -365,21 +429,27 @@ func (c *client) onResponse(frame []byte) {
 		frame,
 		c.options.NoFrameHeader,
 		false,
-		c.options.HandlerBytesToTrip,
+		c.options.PayloadBytesToTrip,
 		c.options.EncryptKey,
 		c.options.BytePool)
 	if err != nil {
+		c.log.Error("decode UDP response failed, err:", err)
 		return
 	}
+
+	// c.log.Debug(rsp.String())
 	switch r := rsp.Rsp.(type) {
 	case *v3.Rsp_HeartbeatRsp:
 		_ = r
+		// c.log.Debug("heartbeat response")
 		return
 	case *v3.Rsp_LogRsp:
 		_ = r
 		batchID := rsp.Header.ReqID
 		index := getWorkerIndex(batchID)
+		// c.log.Debugf("log response, index=%d, batchID=%s", index, batchID)
 		if index < 0 || index >= len(c.workers) {
+			c.log.Debugf("invalid worker index from response, index=%d", index)
 			return
 		}
 		c.workers[index].onRsp(batchRsp{batchID: batchID})

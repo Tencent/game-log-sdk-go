@@ -1,7 +1,6 @@
 package tglog
 
 import (
-	"strings"
 	"time"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
@@ -11,315 +10,110 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// const values
-const (
-	CodecV1 = "v1" // TGLog v1 options: logName|v1|v2|v3\n
-	CodecV3 = "v3" // TGLog v3 options, see: https://git.woa.com/tglog/v3/proto/blob/master/tglog_v3.proto
-)
-
 // Options is the TGLog netClient config options
 type Options struct {
-	AppID                   string                // 业务ID，暂时没什么用途，默认：空
-	AppName                 string                // 业务名称，暂时没什么用途，默认：空
-	AppVer                  string                // 业务版本号，暂时没什么用途，默认：空
 	Network                 string                // 网络，默认：udp
 	Host                    string                // 服务器主机，可以是IP也可以是域名
 	Port                    int                   // 服务器端口
-	Codec                   string                // 格式，默认：v1
-	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
+	WorkerNum               int                   // 工作线程，默认：4
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
 	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：10
 	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：4K
 	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：40960
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
-	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：10000ms
-	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
-	Compress                bool                  // 是否压缩，V3协议有效，默认：false
-	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
-	EncryptKey              string                // 加密密钥，V3协议有效，默认：无
-	WorkerNum               int                   // 工作线程，默认：1
-	Logger                  logger.Logger         // 调试日志，默认：控制台
+	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
 	WriteBufferSize         int                   // 网络层写缓冲大小，默认：64K
 	ReadBufferSize          int                   // 网络层读缓冲大小，默认：64K
 	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：系统内核配置
 	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：系统内核配置
-	MetricsName             string                // metrics唯一名称，用于隔离指标，默认：tglog-go，如果一个进程创建了多个client对象需要配置不同的名字，否则指标名冲突会导致进程异常
-	MetricsRegistry         prometheus.Registerer // 指标存储器，默认：prometheus.DefaultRegisterer
 	BufferPool              bufferpool.BufferPool // 打解包用的缓冲池，为空的话内部初始化一个
 	BytePool                bufferpool.BytePool   // 打解包用的内存池，为空的话内部初始化一个
 	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：4096
 	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：128
 	BytePoolWidth           int                   // 接收响应或者压缩请求时用的缓冲内存块大小，默认：与BatchingMaxSize相同
-	NoFrameHeader           bool                  // 不带协议帧头，V3协议有效，TCP传输时，会强制设置为false，UDP传输时， 不带帧头就无法支持加密和压缩
+	Logger                  logger.Logger         // 调试日志，默认：控制台
+	MetricsName             string                // metrics唯一名称，用于隔离指标，默认：tglog-go，如果一个进程创建了多个client对象需要配置不同的名字，否则指标名冲突会导致进程异常
+	MetricsRegistry         prometheus.Registerer // 指标存储器，默认：prometheus.DefaultRegisterer
 	isV1                    bool                  // 是否V1协议，内部使用
 	isV3                    bool                  // 是否V3协议，内部使用
 	isUDP                   bool                  // 是否UDP，内部使用
 	isTCP                   bool                  // 是否TCP，内部使用
-	LittleEndian            bool                  // 是否小端字节序，默认false
-	MaxFrameLen             int                   // 最大帧长，单位字节，默认：64K
-	FieldOffset             int                   // 长度字段在一个帧中的位移，默认：2
-	FieldLength             int                   // 长度字段占用字节数，默认：4
-	Adjustment              int                   // 计算帧长度时的修正值，可以正可以负：默认：-6
-	BytesToStrip            int                   // 分帧时需要截掉的字节数，只在解码的时候有用，获取帧长度时没用，默认：0
-	HandlerBytesToTrip      int                   // 将一帧数据解码为应用层协议数据时需要截掉的字节数，默认：10，截掉V3协议的10个字节帧头
+	AppID                   string                // 业务ID，暂时没什么用途，V3协议有效，默认：空
+	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
+	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
+	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：10000ms
+	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
+	Compress                bool                  // 是否压缩，V3协议有效，默认：false
+	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
+	EncryptKey              string                // 加密密钥，V3协议有效，默认：无
+	NoFrameHeader           bool                  // 不带协议帧头，V3协议有效，TCP传输时，会强制设置为false，UDP传输时， 不带帧头就无法支持加密和压缩
+	LittleEndian            bool                  // 是否小端字节序，V3协议有效，默认：false
+	MaxFrameLen             int                   // 最大帧长，单位字节，V3协议有效，默认：64K
+	LenFieldOffset          int                   // 长度字段在一个帧中的位移，V3协议有效，默认：2
+	LenFieldLength          int                   // 长度字段占用字节数，V3协议有效，默认：4
+	LenAdjustment           int                   // 计算帧长度时的修正值，可以正可以负V3协议有效，默认：-6
+	FrameBytesToStrip       int                   // 分帧时需要截掉的字节数，只在解码的时候有用，获取帧长度时没用，V3协议有效，默认：0
+	PayloadBytesToTrip      int                   // 从一帧数据获取有效载荷时需要截掉的字节数，V3协议有效，默认：10，截掉V3协议的10个字节帧头
 }
 
-// Option is the Options helper.
-type Option func(*Options)
+// ValidateAndSetDefault validates an options and set up the default values
+func (options *Options) ValidateAndSetDefault() error {
+	if options.Host == "" {
+		// 未指定服务器域名
+		return ErrInvalidHost
+	}
+	if options.Port <= 0 || options.Port > 65535 {
+		// 未指定服务器端口
+		return ErrInvalidPort
+	}
 
-// WithNetwork sets Network
-func WithNetwork(n string) Option {
-	return func(o *Options) {
-		n = strings.ToLower(n)
-		if n != "udp" && n != "tcp" && n != "udp4" && n != "tcp4" && n != "udp6" && n != "tcp6" {
-			return
+	options.isUDP = isUDP(options.Network)
+	options.isTCP = isTCP(options.Network)
+	if (options.isUDP && options.isTCP) || (!options.isUDP && !options.isTCP) {
+		return ErrInvalidNetwork
+	}
+
+	if (options.isV1 && options.isV3) || (!options.isV1 && !options.isV3) {
+		return ErrInvalidProtoVer
+	}
+
+	if options.BatchingMaxSize > maxUDPReqSizeV1 && options.isUDP {
+		options.BatchingMaxSize = maxUDPReqSizeV1
+	}
+	if options.BatchingMaxSize > maxTCPReqSizeV1 && options.isTCP {
+		options.BatchingMaxSize = maxTCPReqSizeV1
+	}
+
+	if options.NoFrameHeader && options.isV3 {
+		// V3协议用TCP传输必须有帧头
+		if options.isTCP {
+			return ErrV3TCPNoFrameHeader
 		}
-		o.Network = n
-	}
-}
-
-// WithHost sets Host
-func WithHost(h string) Option {
-	return func(o *Options) {
-		o.Host = h
-	}
-}
-
-// WithPort sets Port
-func WithPort(p int) Option {
-	return func(o *Options) {
-		if p < 0 || p > 65535 {
-			return
+		// V3协议启用了加密或者压缩必须有协议头
+		if options.Encrypt || options.Compress {
+			return ErrV3CENoFrameHeader
 		}
-		o.Port = p
 	}
-}
+	if options.Encrypt && options.EncryptKey == "" {
+		return ErrInvalidEncryptKey
+	}
 
-// WithCodec sets Codec
-func WithCodec(c string) Option {
-	return func(o *Options) {
-		if c != CodecV1 && c != CodecV3 {
-			return
-		}
-		o.Codec = c
+	if options.BufferPool == nil {
+		options.BufferPool = bufferpool.NewBuffer(options.BufferPoolSize)
 	}
-}
+	if options.BytePool == nil {
+		options.BytePool = bufferpool.NewBytePool(options.BytePoolSize, options.BytePoolWidth)
+	}
+	if options.Logger == nil {
+		options.Logger = logger.Std()
+	}
 
-// WithConnTimeout sets ConnTimeout
-func WithConnTimeout(t time.Duration) Option {
-	return func(o *Options) {
-		if t <= 0 {
-			return
-		}
-		o.ConnTimeout = t
+	if options.SendTimeout == 0 {
+		options.SendTimeout = 10 * time.Second
 	}
-}
+	if options.BatchingMaxPublishDelay == 0 {
+		options.BatchingMaxPublishDelay = 10 * time.Millisecond
+	}
 
-// WithSendTimeout sets SendTimeout
-func WithSendTimeout(t time.Duration) Option {
-	return func(o *Options) {
-		if t <= 0 {
-			return
-		}
-		o.SendTimeout = t
-	}
-}
-
-// WithBatchingMaxPublishDelay sets BatchingMaxPublishDelay
-func WithBatchingMaxPublishDelay(t time.Duration) Option {
-	return func(o *Options) {
-		if t <= 0 {
-			return
-		}
-		o.BatchingMaxPublishDelay = t
-	}
-}
-
-// WithBatchingMaxMessages sets BatchingMaxMessages
-func WithBatchingMaxMessages(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.BatchingMaxMessages = n
-	}
-}
-
-// WithBatchingMaxSize sets BatchingMaxSize
-func WithBatchingMaxSize(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.BatchingMaxSize = n
-	}
-}
-
-// WithMaxPendingMessages sets MaxPendingMessages
-func WithMaxPendingMessages(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.MaxPendingMessages = n
-	}
-}
-
-// WithBlockIfQueueIsFull sets BlockIfQueueIsFull
-func WithBlockIfQueueIsFull(b bool) Option {
-	return func(o *Options) {
-		o.BlockIfQueueIsFull = b
-	}
-}
-
-// WithMaxRetries sets MaxRetries
-func WithMaxRetries(n int) Option {
-	return func(o *Options) {
-		if n < 0 {
-			return
-		}
-		o.MaxRetries = n
-	}
-}
-
-// WithCompress sets Compress
-func WithCompress(c bool) Option {
-	return func(o *Options) {
-		o.Compress = c
-	}
-}
-
-// WithEncrypt sets Encrypt
-func WithEncrypt(e bool) Option {
-	return func(o *Options) {
-		o.Encrypt = e
-	}
-}
-
-// WithEncryptKey sets EncryptKey
-func WithEncryptKey(k string) Option {
-	return func(o *Options) {
-		if k == "" {
-			return
-		}
-		o.EncryptKey = k
-	}
-}
-
-// WithWorkerNum sets WorkerNum
-func WithWorkerNum(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.WorkerNum = n
-	}
-}
-
-// WithLogger sets Logger
-func WithLogger(log logger.Logger) Option {
-	return func(o *Options) {
-		if log == nil {
-			return
-		}
-		o.Logger = log
-	}
-}
-
-// WithMetricsName sets Logger
-func WithMetricsName(name string) Option {
-	return func(o *Options) {
-		o.MetricsName = name
-	}
-}
-
-// WithMetricsRegistry sets Logger
-func WithMetricsRegistry(reg prometheus.Registerer) Option {
-	return func(o *Options) {
-		if reg == nil {
-			return
-		}
-		o.MetricsRegistry = reg
-	}
-}
-
-// WithBufferPool sets BufferPool
-func WithBufferPool(bp bufferpool.BufferPool) Option {
-	return func(o *Options) {
-		o.BufferPool = bp
-	}
-}
-
-// WithBytePool sets BytePool
-func WithBytePool(bp bufferpool.BytePool) Option {
-	return func(o *Options) {
-		o.BytePool = bp
-	}
-}
-
-// WithBufferPoolSize sets BufferPoolSize
-func WithBufferPoolSize(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.BufferPoolSize = n
-	}
-}
-
-// WithBytePoolSize sets BytePoolSize
-func WithBytePoolSize(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.BytePoolSize = n
-	}
-}
-
-// WithBytePoolWidth sets BytePoolWidth
-func WithBytePoolWidth(n int) Option {
-	return func(o *Options) {
-		if n <= 0 {
-			return
-		}
-		o.BytePoolWidth = n
-	}
-}
-
-// WithNoFrameHeader sets NoFrameHeader
-func WithNoFrameHeader(n bool) Option {
-	return func(o *Options) {
-		o.NoFrameHeader = n
-	}
-}
-
-// WithAppID sets AppID
-func WithAppID(id string) Option {
-	return func(o *Options) {
-		if id == "" {
-			return
-		}
-		o.AppID = id
-	}
-}
-
-// WithAppName sets AppName
-func WithAppName(n string) Option {
-	return func(o *Options) {
-		if n == "" {
-			return
-		}
-		o.AppName = n
-	}
-}
-
-// WithAppVer sets AppVer
-func WithAppVer(v string) Option {
-	return func(o *Options) {
-		if v == "" {
-			return
-		}
-		o.AppVer = v
-	}
+	return nil
 }
