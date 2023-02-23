@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"runtime"
+	"sync"
 	"time"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
@@ -26,6 +27,8 @@ var (
 	sdkVersion = "v0.1.0"
 	sequence   atomic.Uint64
 	protoVer   = fmt.Sprintf("%d.%d.%d", v3.ProtoVer_MAJOR, v3.ProtoVer_MINOR, v3.ProtoVer_PATCH)
+	v3ReqPool  *sync.Pool
+	v3RspPool  *sync.Pool
 )
 
 func init() {
@@ -36,10 +39,20 @@ func init() {
 	}
 
 	sequence.Store(rand.New(rand.NewSource(time.Now().UnixNano())).Uint64())
+	v3ReqPool = &sync.Pool{
+		New: func() interface{} {
+			return &v3.Req{}
+		},
+	}
+	v3RspPool = &sync.Pool{
+		New: func() interface{} {
+			return &v3.Rsp{}
+		},
+	}
 }
 
 // EncodeV1 encodes messages into TGLog v1 request bytes
-func EncodeV1(messages []*Message, bb *bytes.Buffer) ([]byte, error) {
+func EncodeV1(messages []Message, bb *bytes.Buffer) ([]byte, error) {
 	if bb == nil {
 		bb = &bytes.Buffer{}
 	}
@@ -60,35 +73,41 @@ func nextSeq() uint64 {
 }
 
 // BuildV3HeartbeatReq builds a TGLog v3 heartbeat request
-func BuildV3HeartbeatReq(appID, appName, appVer, network string) (*v3.Req, error) {
+func BuildV3HeartbeatReq(appID, appName, appVer, network string, req *v3.Req) (*v3.Req, error) {
 	ts := timestamppb.Now()
-	return &v3.Req{
-		Header: &v3.ReqHeader{
-			Context: &v3.Context{
-				AppID:    appID,
-				AppName:  appName,
-				AppVer:   appVer,
-				SdkLang:  language,
-				SdkVer:   sdkVersion,
-				SdkOS:    platform,
-				Network:  network,
-				ProtoVer: protoVer,
-				HostIP:   localIP,
-			},
-			ReqID: ts.String(),
-			Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-			Token: "", // todo token
-			Sig:   "", // todo sig
+	if req == nil {
+		req = &v3.Req{}
+	} else {
+		req.Reset()
+	}
+
+	req.Header = &v3.ReqHeader{
+		Context: &v3.Context{
+			AppID:    appID,
+			AppName:  appName,
+			AppVer:   appVer,
+			SdkLang:  language,
+			SdkVer:   sdkVersion,
+			SdkOS:    platform,
+			Network:  network,
+			ProtoVer: protoVer,
+			HostIP:   localIP,
 		},
-		Req: &v3.Req_HeartbeatReq{
-			HeartbeatReq: &v3.HeartbeatReq{Ping: &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}},
-		},
-	}, nil
+		ReqID: ts.String(),
+		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
+		Token: "", // todo token
+		Sig:   "", // todo sig
+	}
+	req.Req = &v3.Req_HeartbeatReq{
+		HeartbeatReq: &v3.HeartbeatReq{Ping: &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}},
+	}
+
+	return req, nil
 }
 
 // BuildV3LogReq builds a TGLog v3 log request
-func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []*Message,
-	labels map[string]string, annotations map[string]string) (*v3.Req, error) {
+func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []Message,
+	labels map[string]string, annotations map[string]string, req *v3.Req) (*v3.Req, error) {
 	if len(messages) == 0 {
 		return nil, errors.New("input message slice is empty")
 	}
@@ -112,26 +131,31 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []*Me
 	}
 
 	ts := timestamppb.Now()
-	req := &v3.Req{
-		Header: &v3.ReqHeader{
-			Context: &v3.Context{
-				AppID:    appID,
-				AppName:  appName,
-				AppVer:   appVer,
-				SdkLang:  language,
-				SdkVer:   sdkVersion,
-				SdkOS:    platform,
-				Network:  network,
-				ProtoVer: protoVer,
-				HostIP:   localIP,
-			},
-			ReqID: reqID,
-			Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-			Token: "", // todo token
-			Sig:   "", // todo sig
-		},
-		Req: logReq,
+
+	if req == nil {
+		req = &v3.Req{}
+	} else {
+		req.Reset()
 	}
+
+	req.Header = &v3.ReqHeader{
+		Context: &v3.Context{
+			AppID:    appID,
+			AppName:  appName,
+			AppVer:   appVer,
+			SdkLang:  language,
+			SdkVer:   sdkVersion,
+			SdkOS:    platform,
+			Network:  network,
+			ProtoVer: protoVer,
+			HostIP:   localIP,
+		},
+		ReqID: reqID,
+		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
+		Token: "", // todo token
+		Sig:   "", // todo sig
+	}
+	req.Req = logReq
 
 	return req, nil
 }
@@ -216,7 +240,8 @@ func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey 
 }
 
 // DecodeV3Rsp decode a byte frame into TGLog v3 response
-func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int, encryptKey string, bp bufferpool.BytePool) (*v3.Rsp, error) {
+func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int, encryptKey string,
+	bp bufferpool.BytePool, rsp *v3.Rsp) (*v3.Rsp, error) {
 	if len(frame) == 0 {
 		return nil, errors.New("input frame is empty")
 	}
@@ -242,7 +267,12 @@ func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int
 		payload = frame[bytesToStrip:]
 	}
 
-	rsp := &v3.Rsp{}
+	if rsp == nil {
+		rsp = &v3.Rsp{}
+	} else {
+		rsp.Reset()
+	}
+
 	// 未加密未压缩，直接解包
 	if !compressed && !encrypted {
 		err = rsp.Unmarshal(payload) // proto.Unmarshal(payload, rsp)

@@ -37,14 +37,14 @@ var (
 )
 
 // Callback is the callback func that will be called when Client finish sending the message
-type Callback func(msg *Message, err error)
+type Callback func(msg Message, err error)
 
 // Client is the interface of a TGLog netClient
 type Client interface {
 	// Send sends the msg synchronously
-	Send(ctx context.Context, msg *Message) error
+	Send(ctx context.Context, msg Message) error
 	// SendAsync sends the log asynchronously, if cb is not nil, it will be called after the log is sent.
-	SendAsync(ctx context.Context, msg *Message, cb Callback)
+	SendAsync(ctx context.Context, msg Message, cb Callback)
 	// Close closes the netClient
 	Close()
 }
@@ -310,12 +310,12 @@ func (c *client) Dial() (net.Conn, error) {
 	return c.netClient.Dial(c.options.Network, ep.Addr)
 }
 
-func (c *client) Send(ctx context.Context, msg *Message) error {
+func (c *client) Send(ctx context.Context, msg Message) error {
 	worker := c.getWorker()
 	return worker.send(ctx, msg)
 }
 
-func (c *client) SendAsync(ctx context.Context, msg *Message, cb Callback) {
+func (c *client) SendAsync(ctx context.Context, msg Message, cb Callback) {
 	worker := c.getWorker()
 	worker.sendAsync(ctx, msg, cb)
 }
@@ -425,13 +425,17 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 }
 
 func (c *client) onResponse(frame []byte) {
+	rsp := v3RspPool.Get().(*v3.Rsp)
+	defer v3RspPool.Put(rsp)
+	
 	rsp, err := DecodeV3Rsp(
 		frame,
 		c.options.NoFrameHeader,
 		false,
 		c.options.PayloadBytesToTrip,
 		c.options.EncryptKey,
-		c.options.BytePool)
+		c.options.BytePool,
+		rsp)
 	if err != nil {
 		c.log.Error("decode UDP response failed, err:", err)
 		return

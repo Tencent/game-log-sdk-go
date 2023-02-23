@@ -3,6 +3,7 @@ package tglog
 import (
 	"bytes"
 	"context"
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type updateConnReq struct {
 
 type sendDataReq struct {
 	ctx              context.Context
-	msg              *Message
+	msg              Message
 	callback         Callback
 	flushImmediately bool
 	publishTime      time.Time
@@ -103,7 +104,7 @@ func (b *batchReq) encode() ([]byte, error) {
 	b.buffer = b.bufferPool.Get()
 	b.buffer.Grow(b.dataSize)
 
-	messages := make([]*Message, len(b.dataReqs))
+	messages := make([]Message, len(b.dataReqs))
 	for i := 0; i < len(b.dataReqs); i++ {
 		messages[i] = b.dataReqs[i].msg
 	}
@@ -113,6 +114,9 @@ func (b *batchReq) encode() ([]byte, error) {
 	}
 
 	if b.options.isV3 {
+		req := v3ReqPool.Get().(*v3.Req)
+		defer v3ReqPool.Put(req)
+
 		req, err := BuildV3LogReq(
 			b.options.AppID,
 			b.options.AppName,
@@ -121,7 +125,7 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.batchID,
 			messages,
 			nil,
-			nil)
+			nil, req)
 		if err != nil {
 			return nil, err
 		}

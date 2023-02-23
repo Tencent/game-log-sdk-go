@@ -3,6 +3,7 @@ package tglog
 import (
 	"context"
 	"errors"
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
 	"net"
 	"strconv"
 	"time"
@@ -195,7 +196,7 @@ func (w *worker) start() {
 	}
 }
 
-func (w *worker) doSendAsync(ctx context.Context, msg *Message, callback Callback, flushImmediately bool) {
+func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback, flushImmediately bool) {
 	req := &sendDataReq{
 		ctx:              ctx,
 		msg:              msg,
@@ -242,14 +243,14 @@ func (w *worker) doSendAsync(ctx context.Context, msg *Message, callback Callbac
 	w.metrics.incPending()
 }
 
-func (w *worker) send(ctx context.Context, msg *Message) error {
+func (w *worker) send(ctx context.Context, msg Message) error {
 	var err error
 
 	// 防止竞争写（实际上响应和请求目前在一个协程中，不存在竞争）
 	isDone := atomic.NewBool(false)
 	doneCh := make(chan struct{})
 
-	w.doSendAsync(ctx, msg, func(msg *Message, e error) {
+	w.doSendAsync(ctx, msg, func(msg Message, e error) {
 		if isDone.CompareAndSwap(false, true) {
 			err = e       // 保存错误
 			close(doneCh) // 通知外部处理完成
@@ -261,7 +262,7 @@ func (w *worker) send(ctx context.Context, msg *Message) error {
 	return err
 }
 
-func (w *worker) sendAsync(ctx context.Context, msg *Message, callback Callback) {
+func (w *worker) sendAsync(ctx context.Context, msg Message, callback Callback) {
 	w.doSendAsync(ctx, msg, callback, false)
 }
 
@@ -409,11 +410,15 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
+	req := v3ReqPool.Get().(*v3.Req)
+	defer v3ReqPool.Put(req)
+
 	req, err := BuildV3HeartbeatReq(
 		w.options.AppID,
 		w.options.AppName,
 		w.options.AppVer,
-		w.options.Network)
+		w.options.Network,
+		req)
 	if err != nil {
 		return
 	}

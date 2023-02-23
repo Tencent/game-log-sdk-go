@@ -21,11 +21,11 @@ func main() {
 	}
 
 	for i := 0; i < 10; i++ {
-		client.Send(context.Background(), &tglog.Message{Name: "test", Payload: []byte("test|a|b|c")})
+		client.Send(context.Background(), tglog.Message{Name: "test", Payload: []byte("test|a|b|c")})
 	}
 
 	for i := 0; i < 10; i++ {
-		client.SendAsync(context.Background(), &tglog.Message{Name: "test", Payload: []byte("test|d|e|f")}, nil)
+		client.SendAsync(context.Background(), tglog.Message{Name: "test", Payload: []byte("test|d|e|f")}, nil)
 	}
 	time.Sleep(3 * time.Second)
 	client.Close()
