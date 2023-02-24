@@ -2,8 +2,6 @@ package discoverer
 
 import (
 	"errors"
-	"math"
-	"math/rand"
 	"net"
 	"regexp"
 	"sort"
@@ -48,7 +46,6 @@ func NewDNS(domain string, port int, lookupInterval time.Duration, log logger.Lo
 		hostListMap:    make(map[string]struct{}),
 		eventHandlers:  make(map[EventHandler]struct{}),
 		log:            logger,
-		curIndex:       rand.New(rand.NewSource(time.Now().UnixNano())).Int(),
 	}
 
 	regex := regexp.MustCompile(ipRegexp)
@@ -78,25 +75,6 @@ type dnsDiscoverer struct {
 	eventHandlers  map[EventHandler]struct{}
 	closeFunc      func()
 	log            logger.Logger
-	curIndex       int
-}
-
-func (d *dnsDiscoverer) GetEndpoint() (Endpoint, error) {
-	d.RLock()
-	defer d.RUnlock()
-
-	epLen := len(d.endpointList)
-	if epLen == 0 {
-		return Endpoint{}, ErrNoAvailableEndpoint
-	}
-
-	if d.curIndex == math.MaxInt {
-		d.curIndex = 0
-	}
-
-	ep := d.endpointList[d.curIndex%epLen]
-	d.curIndex++
-	return ep, nil
 }
 
 func (d *dnsDiscoverer) GetEndpoints() EndpointList {
@@ -127,7 +105,6 @@ func (d *dnsDiscoverer) Close() {
 }
 
 func (d *dnsDiscoverer) lookup() {
-
 	hosts := make(map[string]struct{}, 16)
 	for i := 1; i <= 32; i++ {
 		lookupHosts, err := net.LookupHost(d.domain)
@@ -156,14 +133,14 @@ func (d *dnsDiscoverer) lookup() {
 		return
 	}
 
-	hostList := make([]string, 0, len(hosts))
-	endpointList := make([]Endpoint, 0, len(hosts))
-	hostListMap := make(map[string]struct{})
+	allHosts := make([]string, 0, len(hosts))
+	allHostMap := make(map[string]struct{})
+	allEndpoints := make([]Endpoint, 0, len(hosts))
 	addEndpoints := make([]Endpoint, 0)
 	for host := range hosts {
-		hostList = append(hostList, host)
-		endpointList = append(endpointList, Endpoint{Host: host, Port: d.port, Addr: buildAddr(host, d.port)})
-		hostListMap[host] = struct{}{}
+		allHosts = append(allHosts, host)
+		allHostMap[host] = struct{}{}
+		allEndpoints = append(allEndpoints, Endpoint{Host: host, Port: d.port, Addr: buildAddr(host, d.port)})
 
 		// new host is not found in the old host list map, it is a new added one
 		if _, ok := d.hostListMap[host]; !ok {
@@ -174,36 +151,30 @@ func (d *dnsDiscoverer) lookup() {
 	delEndpoints := make([]Endpoint, 0)
 	for host := range d.hostListMap {
 		// old host is not found in the new host list map, it is deleted
-		if _, ok := hostListMap[host]; !ok {
+		if _, ok := allHostMap[host]; !ok {
 			delEndpoints = append(delEndpoints, Endpoint{Host: host, Port: d.port, Addr: buildAddr(host, d.port)})
 		}
 	}
 
 	d.Lock()
-	d.endpointList = endpointList
-	d.hostListMap = hostListMap
+	d.endpointList = allEndpoints
+	d.hostListMap = allHostMap
 	d.Unlock()
 
 	// show this logger only in case of ip list change
-	// only ticker will update d.hostListStr, lock is unnecessary
-	sort.Strings(hostList)
-	hostListStr := strings.Join(hostList, ";")
-	if hostListStr != d.hostListStr {
-		d.hostListStr = hostListStr
-		d.log.Infof("update domain host list %s: %v", d.domain, hostListStr)
+	// only ticker will update d.allHostStr, lock is unnecessary
+	sort.Strings(allHosts)
+	allHostStr := strings.Join(allHosts, ";")
+	if allHostStr != d.hostListStr {
+		d.hostListStr = allHostStr
+		d.log.Infof("update domain host list %s: %v", d.domain, allHostStr)
 	}
 
 	d.RLock()
 	defer d.RUnlock()
-	if len(addEndpoints) > 0 {
+	if len(addEndpoints) > 0 || len(delEndpoints) > 0 {
 		for h := range d.eventHandlers {
-			h.OnEndpointAdd(addEndpoints)
-		}
-	}
-
-	if len(delEndpoints) > 0 {
-		for h := range d.eventHandlers {
-			h.OnEndpointDel(delEndpoints)
+			h.OnEndpointUpdate(allEndpoints, addEndpoints, delEndpoints)
 		}
 	}
 }

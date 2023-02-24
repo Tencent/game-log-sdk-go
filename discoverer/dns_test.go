@@ -9,12 +9,10 @@ import (
 type handler struct {
 }
 
-func (h *handler) OnEndpointDel(eps []Endpoint) {
-	fmt.Println("del:", eps)
-}
-
-func (h *handler) OnEndpointAdd(eps []Endpoint) {
-	fmt.Println("add:", eps)
+func (h *handler) OnEndpointUpdate(all, add, del EndpointList) {
+	fmt.Println("all:", all)
+	fmt.Println("add:", add)
+	fmt.Println("del:", del)
 }
 
 func TestNewDNS(t *testing.T) {
@@ -22,6 +20,7 @@ func TestNewDNS(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	fmt.Println(dns.GetEndpoints())
+	fmt.Println("get", dns.GetEndpoints())
+	dns.AddEventHandler(&handler{})
 	select {}
 }

@@ -3,6 +3,7 @@ package tglog
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,7 @@ var (
 	ErrInvalidHost        = errors.New("invalid host")
 	ErrInvalidPort        = errors.New("invalid port")
 	ErrInvalidNetwork     = errors.New("invalid network")
+	ErrNoEndpoint         = errors.New("service has no endpoints")
 	ErrInvalidProtoVer    = errors.New("invalid protocol version")
 	ErrV3TCPNoFrameHeader = errors.New("NoFrameHeader it must be false when protocol is V3 and network is TCP")
 	ErrV3CENoFrameHeader  = errors.New("NoFrameHeader it must be false when protocol is V3 and compress or encrypt is true")
@@ -50,16 +52,16 @@ type Client interface {
 }
 
 type client struct {
-	*gnet.BuiltinEventEngine                       // 继承网络事件处理器
-	options                  *Options              // 配置
-	discoverer               discoverer.Discoverer // 服务发现
-	connPool                 connpool.ConnPool     // 连接池
-	netClient                *gnet.Client          // 多路复用管理器
-	workers                  []*worker             // 工作者
-	curWorkerIndex           atomic.Uint64         // 当前工作者
-	log                      logger.Logger         // 日志
-	metrics                  *metrics              // 指标
-	framer                   framer                // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
+	*gnet.BuiltinEventEngine                                     // 继承网络事件处理器
+	options                  *Options                            // 配置
+	discoverer               discoverer.Discoverer               // 服务发现
+	connPool                 connpool.EndpointRestrictedConnPool // 连接池
+	netClient                *gnet.Client                        // 多路复用管理器
+	workers                  []*worker                           // 工作者
+	curWorkerIndex           atomic.Uint64                       // 当前工作者
+	log                      logger.Logger                       // 日志
+	metrics                  *metrics                            // 指标
+	framer                   framer                              // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
 }
 
 // NewV1Client news a TGLog client that use UDP network and V1 proto
@@ -237,24 +239,27 @@ func (c *client) initNetClient() error {
 }
 
 func (c *client) initConns() error {
-	// as a client, 256 is enough
-	c.connPool = connpool.NewConnPool(256)
-
-	// create some conns and then put them back to the pool
-	initConns := make([]net.Conn, 0)
-	for i := 0; i < c.options.WorkerNum+4; i++ {
-		conn, err := c.getConn()
-		if err != nil {
-			return err
-		}
-
-		initConns = append(initConns, conn)
+	epList := c.discoverer.GetEndpoints()
+	epLen := len(epList)
+	if epLen == 0 {
+		return ErrNoEndpoint
 	}
 
-	for _, conn := range initConns {
-		c.putConn(conn)
+	endpoints := make([]string, epLen)
+	for i := 0; i < epLen; i++ {
+		endpoints[i] = epList[i].Addr
 	}
 
+	// maximum connection number per endpoint is 3
+	connsPerEndpoint := c.options.WorkerNum/epLen + 1
+	connsPerEndpoint = int(math.Min(3, float64(connsPerEndpoint)))
+
+	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 512, c, c.log)
+	if err != nil {
+		return err
+	}
+
+	c.connPool = pool
 	return nil
 }
 
@@ -301,13 +306,8 @@ func (c *client) initMetrics() error {
 	return nil
 }
 
-func (c *client) Dial() (net.Conn, error) {
-	ep, err := c.discoverer.GetEndpoint()
-	if err != nil {
-		return nil, err
-	}
-
-	return c.netClient.Dial(c.options.Network, ep.Addr)
+func (c *client) Dial(addr string) (net.Conn, error) {
+	return c.netClient.Dial(c.options.Network, addr)
 }
 
 func (c *client) Send(ctx context.Context, msg Message) error {
@@ -346,15 +346,11 @@ func (c *client) createWorker(index int) (*worker, error) {
 }
 
 func (c *client) getConn() (net.Conn, error) {
-	return c.connPool.Get(c)
+	return c.connPool.Get()
 }
 
-func (c *client) putConn(conn net.Conn) {
-	c.connPool.Put(conn)
-}
-
-func (c *client) closeConn(conn net.Conn) {
-	connpool.CloseConn(conn, 2*time.Minute)
+func (c *client) putConn(conn net.Conn, err error) {
+	c.connPool.Put(conn, err)
 }
 
 func (c *client) OnBoot(e gnet.Engine) gnet.Action {
@@ -427,7 +423,7 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 func (c *client) onResponse(frame []byte) {
 	rsp := v3RspPool.Get().(*v3.Rsp)
 	defer v3RspPool.Put(rsp)
-	
+
 	rsp, err := DecodeV3Rsp(
 		frame,
 		c.options.NoFrameHeader,
@@ -462,46 +458,8 @@ func (c *client) onResponse(frame []byte) {
 	}
 }
 
-func (c *client) OnEndpointDel(endpoints discoverer.EndpointList) {
-	deletedEndpoints := make(map[string]struct{})
-	for _, ep := range endpoints {
-		deletedEndpoints[ep.Addr] = struct{}{}
-	}
-
-	// 通知工作者，如果有使用这些端点，需要切换一下
-	for _, w := range c.workers {
-		w.updateConn(deletedEndpoints)
-	}
-
-	// 删除连接池中对应的连接
-	num := c.connPool.NumPooled()
-	for i := 0; i < num; i++ {
-		conn, err := c.connPool.Get(nil)
-		if err != nil {
-			continue
-		}
-
-		addr := conn.RemoteAddr().String()
-		_, ok := deletedEndpoints[addr]
-		if ok {
-			c.closeConn(conn)
-		} else {
-			c.connPool.Put(conn)
-		}
-	}
-}
-
-func (c *client) OnEndpointAdd(endpoints discoverer.EndpointList) {
-	// 创建新的连接放入池中
-	for _, ep := range endpoints {
-		conn, err := c.netClient.Dial(c.options.Network, ep.Addr)
-		if err != nil {
-			c.log.Error("dail error:", err)
-			continue
-		}
-
-		c.putConn(conn)
-	}
+func (c *client) OnEndpointUpdate(all, add, del discoverer.EndpointList) {
+	c.connPool.UpdateEndpoints(all.Addresses(), add.Addresses(), del.Addresses())
 }
 
 func isUDP(network string) bool {

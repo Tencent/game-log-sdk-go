@@ -77,9 +77,8 @@ func getErrorCode(err error) string {
 	return errCodeUnknown
 }
 
-func init() {
-}
-
+// todo:当前每次发包都是getConn/Write/putConn，putConn为了支持服务器RS下线，有一个sync.Map读操作，需要通过性能测试决定是否需要改成定时更新
+// conn，减少putConn（其实就是sync.Map读操作）的调用，以提高性能
 type worker struct {
 	client             *client               // 上层client
 	index              int                   // worker id
@@ -137,12 +136,6 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 
 	w.setState(stateInit)
 
-	conn, err := cli.getConn()
-	if err != nil {
-		return nil, err
-	}
-	w.setConn(conn)
-
 	go w.start()
 	w.setState(stateReady)
 
@@ -157,8 +150,6 @@ func (w *worker) start() {
 				continue
 			}
 			switch r := req.(type) {
-			case *updateConnReq:
-				w.handleUpdateConn(r)
 			case *closeReq:
 				w.handleClose(r)
 				return
@@ -225,13 +216,13 @@ func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback
 	// 用一个semaphore来检查sendCh是否已满，生产时，获得信号，消费时，释放信号，可以实现满的时候直接返回
 	if w.options.BlockIfQueueIsFull {
 		if !w.dataSemaphore.Acquire(ctx) {
-			w.log.Warn("queue is full, worker index:", w.index, ", server:", w.getConn().RemoteAddr())
+			w.log.Warn("queue is full, worker index:", w.index)
 			req.done(errContextExpired)
 			return
 		}
 	} else {
 		if !w.dataSemaphore.TryAcquire() {
-			w.log.Warn("queue is full, worker index:", w.index, ", server:", w.getConn().RemoteAddr())
+			w.log.Warn("queue is full, worker index:", w.index)
 			req.done(errSendQueueIsFull)
 			return
 		}
@@ -337,14 +328,18 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		return
 	}
 
-	conn := w.getConn()
+	conn, err := w.client.getConn()
+	if err != nil {
+		b.done(err)
+		return
+	}
+
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
 	_, err = conn.Write(b.buffer.Bytes())
+	w.client.putConn(conn, err)
 	if err != nil {
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send batch failed, error", err)
-		// 网络错误，换一个连接
-		w.doUpdateConn(conn)
 		// 放入重试队列
 		if retryOnFail {
 			w.retryBatches <- b
@@ -431,7 +426,13 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	_, _ = w.getConn().Write(bytes)
+	conn, err := w.client.getConn()
+	if err != nil {
+		return
+	}
+
+	_, err = conn.Write(bytes)
+	w.client.putConn(conn, err)
 }
 
 func (w *worker) onRsp(rsp batchRsp) {
@@ -519,8 +520,6 @@ func (w *worker) handleClose(req *closeReq) {
 	closeAll := func() {
 		// 关闭发送超时处理定时器
 		w.sendTimeoutTicker.Stop()
-		// 闭关网络连接，读响应的调用会立即返回，这样读协程才不会阻塞在读上，这个要在停止读协程前调用
-		_ = w.getConn().Close()
 		// 停止命令管道
 		close(w.cmdChan)
 		// 关闭响应接收队列，这个要在读协程停止之后调用
@@ -548,44 +547,9 @@ func (w *worker) handleClose(req *closeReq) {
 	}
 }
 
-func (w *worker) updateConn(deletedEndpoints map[string]struct{}) {
-	req := &updateConnReq{
-		deletedEndpoints: deletedEndpoints,
-		doneCh:           make(chan struct{}),
-	}
-
-	w.cmdChan <- req
-	// wait
-	<-req.doneCh
-}
-
-func (w *worker) doUpdateConn(oldConn net.Conn) {
-	newConn, err := w.client.getConn()
-	if err != nil {
-		w.log.Error("get new conn error:", err)
-		w.metrics.incError(errCodeNewConnFailed)
-		return
-	}
-
-	w.setConn(newConn)
-	w.client.closeConn(oldConn)
-	w.metrics.incUpdateConn()
-}
-
-func (w *worker) handleUpdateConn(r *updateConnReq) {
-	defer close(r.doneCh)
-
-	oldConn := w.getConn()
-	_, ok := r.deletedEndpoints[oldConn.RemoteAddr().String()]
-	if ok {
-		w.doUpdateConn(oldConn)
-	}
-}
-
 func (w *worker) setConn(conn net.Conn) {
 	w.conn.Store(conn)
 }
-
 func (w *worker) getConn() net.Conn {
 	return w.conn.Load().(net.Conn)
 }

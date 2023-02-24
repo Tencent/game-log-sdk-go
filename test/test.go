@@ -20,8 +20,9 @@ func main() {
 		return
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 1000; i++ {
 		client.Send(context.Background(), tglog.Message{Name: "test", Payload: []byte("test|a|b|c")})
+		time.Sleep(1 * time.Second) // 在这里休眠是为了测试发包过程中修改DNS中的RS时连接能否正更新
 	}
 
 	for i := 0; i < 10; i++ {

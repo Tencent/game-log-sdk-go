@@ -14,11 +14,6 @@ import (
 	"git.woa.com/tglog/v3/sdk-go/util"
 )
 
-type updateConnReq struct {
-	deletedEndpoints map[string]struct{}
-	doneCh           chan struct{}
-}
-
 type sendDataReq struct {
 	ctx              context.Context
 	msg              Message
