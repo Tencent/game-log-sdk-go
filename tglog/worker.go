@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval = 60
-	defaultMapCleanInterval  = 20
-	defaultMapCleanThreshold = 500000
+	defaultHeartbeatInterval  = 60
+	defaultUpdateConnInterval = 60
+	defaultMapCleanInterval   = 20
+	defaultMapCleanThreshold  = 500000
 )
 
 type workerState int32
@@ -46,8 +47,11 @@ var (
 	errCodeContextExpired  = "10005"
 	errLogToLong           = errors.New("input log is too long")
 	errCodeLogToLong       = "10006"
+	errNewConnFailed       = errors.New("new conn failed")
 	errCodeNewConnFailed   = "10007"
+	errConnWriteFailed     = errors.New("conn write failed")
 	errCodeConnWriteFailed = "10008"
+	errConnReadFailed      = errors.New("conn read failed")
 	errCodeConnReadFailed  = "10009"
 	errCodeUnknown         = "20001"
 )
@@ -74,11 +78,24 @@ func getErrorCode(err error) string {
 	if err == errLogToLong {
 		return errCodeLogToLong
 	}
+	if err == errNewConnFailed {
+		return errCodeNewConnFailed
+	}
+	if err == errConnWriteFailed {
+		return errCodeConnWriteFailed
+	}
+	if err == errConnReadFailed {
+		return errCodeConnReadFailed
+	}
 	return errCodeUnknown
 }
 
-// todo:当前每次发包都是getConn/Write/putConn，putConn为了支持服务器RS下线，有一个sync.Map读操作，需要通过性能测试决定是否需要改成定时更新
-// conn，减少putConn（其实就是sync.Map读操作）的调用，以提高性能
+// 说明：
+// 这里用定时器更新连接是为了减少还连接时对连接池中一个sync.Map（有锁，虽然是桶级别的锁，还是会有开销 ）的访问以提高性能，
+// 其实每次发包时取连接/发包/还连接也可以，但是性能会低一点点，用定时器在服务器域名上下线CLB时更新连接会没有这么及时，但在连接
+// 出错时也做了及时更新，对于TCP是可以及时做到更新的，对于UDP，因为是无连接的，则不能及时更新，考虑到运营时我们连接的是服务器的
+// CLB而不是直连RS，所以是可以接受的。（如果是直连RS，对于UPD来讲，在DNS缓存刷新的这段时间，每次发包都换一个连接也无法避免会
+// 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来）
 type worker struct {
 	client             *client               // 上层client
 	index              int                   // worker id
@@ -98,6 +115,7 @@ type worker struct {
 	sendTimeoutTicker  *time.Ticker          // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
 	heartbeatTicker    *time.Ticker          // 心跳定时器
 	mapCleanTicker     *time.Ticker          // map清理定时器
+	updateConnTicker   *time.Ticker          // 更新连接定时器，定时从连接池获取连接替换现有连接。
 	unackedBatchCount  int                   // map清理计数器
 	metrics            *metrics              // 指标
 	bufferPool         bufferpool.BufferPool // 缓冲池
@@ -121,6 +139,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		sendTimeoutTicker:  time.NewTicker(opts.SendTimeout),
 		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
 		mapCleanTicker:     time.NewTicker(defaultMapCleanInterval * time.Second),
+		updateConnTicker:   time.NewTicker(defaultUpdateConnInterval * time.Second),
 		metrics:            cli.metrics,
 		bufferPool:         opts.BufferPool,
 		bytePool:           opts.BytePool,
@@ -135,6 +154,12 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	}
 
 	w.setState(stateInit)
+
+	conn, err := cli.getConn()
+	if err != nil {
+		return nil, err
+	}
+	w.setConn(conn)
 
 	go w.start()
 	w.setState(stateReady)
@@ -171,6 +196,9 @@ func (w *worker) start() {
 		case <-w.heartbeatTicker.C:
 			// 定时发送心跳
 			w.handleSendHeartbeat()
+		case <-w.updateConnTicker.C:
+			// 更新连接
+			w.handleUpdateConn()
 		case rsp, ok := <-w.responseBatches:
 			// 处理响应
 			if !ok {
@@ -328,23 +356,19 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		return
 	}
 
-	conn, err := w.client.getConn()
-	if err != nil {
-		b.done(err)
-		return
-	}
-
+	conn := w.getConn()
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
 	_, err = conn.Write(b.buffer.Bytes())
-	w.client.putConn(conn, err)
 	if err != nil {
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send batch failed, error", err)
+		// 网络错误，换一个连接
+		w.updateConn(errConnWriteFailed)
 		// 放入重试队列
 		if retryOnFail {
 			w.retryBatches <- b
 		} else {
-			b.done(errSendFailed)
+			b.done(errConnWriteFailed)
 		}
 		return
 	}
@@ -408,11 +432,14 @@ func (w *worker) handleSendHeartbeat() {
 	req := v3ReqPool.Get().(*v3.Req)
 	defer v3ReqPool.Put(req)
 
+	reqID := buildBatchID(w.indexStr)
 	req, err := BuildV3HeartbeatReq(
 		w.options.AppID,
 		w.options.AppName,
 		w.options.AppVer,
 		w.options.Network,
+		reqID,
+		"",
 		req)
 	if err != nil {
 		return
@@ -426,13 +453,13 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	conn, err := w.client.getConn()
-	if err != nil {
-		return
-	}
-
+	conn := w.getConn()
 	_, err = conn.Write(bytes)
-	w.client.putConn(conn, err)
+	if err != nil {
+		w.metrics.incError(errCodeConnWriteFailed)
+		w.log.Error("send heartbeat failed")
+		w.updateConn(errConnWriteFailed)
+	}
 }
 
 func (w *worker) onRsp(rsp batchRsp) {
@@ -492,6 +519,10 @@ func (w *worker) handleClose(req *closeReq) {
 	// 停止清理map的定时器
 	w.mapCleanTicker.Stop()
 	// w.sendTimeoutTicker没有停，发送超时的请求仍然会被处理
+	//
+	// 停止更新连接的定时器
+	w.updateConnTicker.Stop()
+
 	// 消费掉w.dataChan中的数据，先起一个协程关闭dataChan，当没有数据时，下面的for循环消费就不会阻塞
 	go func() {
 		close(w.dataChan)
@@ -520,6 +551,8 @@ func (w *worker) handleClose(req *closeReq) {
 	closeAll := func() {
 		// 关闭发送超时处理定时器
 		w.sendTimeoutTicker.Stop()
+		// 释放连接
+		w.client.putConn(w.getConn(), nil)
 		// 停止命令管道
 		close(w.cmdChan)
 		// 关闭响应接收队列，这个要在读协程停止之后调用
@@ -545,6 +578,25 @@ func (w *worker) handleClose(req *closeReq) {
 		// 重新写回map中
 		w.unackedBatches[id] = batch
 	}
+}
+
+func (w *worker) updateConn(err error) {
+	w.log.Debug("worker[", w.index, "] updateConn")
+	newConn, err := w.client.getConn()
+	if err != nil {
+		w.log.Error("get new conn error:", err)
+		w.metrics.incError(errCodeNewConnFailed)
+		return
+	}
+
+	oldConn := w.getConn()
+	w.client.putConn(oldConn, err)
+	w.setConn(newConn)
+	w.metrics.incUpdateConn(getErrorCode(err))
+}
+
+func (w *worker) handleUpdateConn() {
+	w.updateConn(nil)
 }
 
 func (w *worker) setConn(conn net.Conn) {

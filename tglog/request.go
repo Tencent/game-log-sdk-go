@@ -118,6 +118,7 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.AppVer,
 			b.options.Network,
 			b.batchID,
+			"",
 			messages,
 			nil,
 			nil, req)

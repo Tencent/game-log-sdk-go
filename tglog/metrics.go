@@ -75,6 +75,7 @@ func (m *metrics) init() error {
 		}
 		m.errorCounter = are.ExistingCollector.(*prometheus.CounterVec)
 	}
+
 	m.retryCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_retry_count",
 		Help: "Counter of retry batches",
@@ -87,6 +88,7 @@ func (m *metrics) init() error {
 		}
 		m.retryCounter = are.ExistingCollector.(*prometheus.CounterVec)
 	}
+
 	m.timeoutCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_timeout_count",
 		Help: "Counter of timeout batches",
@@ -99,6 +101,7 @@ func (m *metrics) init() error {
 		}
 		m.timeoutCounter = are.ExistingCollector.(*prometheus.CounterVec)
 	}
+
 	m.messageCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_msg_count",
 		Help: "Counter of message",
@@ -111,10 +114,11 @@ func (m *metrics) init() error {
 		}
 		m.messageCounter = are.ExistingCollector.(*prometheus.CounterVec)
 	}
+
 	m.updateConnCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_update_conn_count",
 		Help: "Counter of update connection events",
-	}, []string{"name"})
+	}, []string{"name", "code"})
 	err = m.registry.Register(m.updateConnCounter)
 	if err != nil {
 		are, ok := err.(prometheus.AlreadyRegisteredError)
@@ -123,6 +127,7 @@ func (m *metrics) init() error {
 		}
 		m.updateConnCounter = are.ExistingCollector.(*prometheus.CounterVec)
 	}
+
 	m.pendingMessageGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tglog_go_pending_msg_gauge",
 		Help: "Gauge of pending message",
@@ -135,6 +140,7 @@ func (m *metrics) init() error {
 		}
 		m.pendingMessageGauge = are.ExistingCollector.(*prometheus.GaugeVec)
 	}
+
 	m.batchSizeHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "tglog_go_batch_size",
 		Help:    "Histogram of batch size",
@@ -148,6 +154,7 @@ func (m *metrics) init() error {
 		}
 		m.batchSizeHistogram = are.ExistingCollector.(*prometheus.HistogramVec)
 	}
+
 	m.batchTimeHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "tglog_go_batch_time",
 		Help:    "Histogram of batch time in milliseconds",
@@ -161,6 +168,7 @@ func (m *metrics) init() error {
 		}
 		m.batchTimeHistogram = are.ExistingCollector.(*prometheus.HistogramVec)
 	}
+	
 	return nil
 }
 func (m *metrics) incError(code string) {
@@ -251,9 +259,9 @@ func (m *metrics) incMessage(code string) {
 	c.Add(float64(1))
 	m.messageCounters[code] = c
 }
-func (m *metrics) incUpdateConn() {
+func (m *metrics) incUpdateConn(code string) {
 	m.updateConnCounterLock.RLock()
-	c, ok := m.updateConnCounters["default"]
+	c, ok := m.updateConnCounters[code]
 	m.updateConnCounterLock.RUnlock()
 	if ok {
 		c.Add(float64(1))
@@ -261,17 +269,17 @@ func (m *metrics) incUpdateConn() {
 	}
 	m.updateConnCounterLock.Lock()
 	defer m.updateConnCounterLock.Unlock()
-	c, ok = m.updateConnCounters["default"]
+	c, ok = m.updateConnCounters[code]
 	if ok {
 		c.Add(float64(1))
 		return
 	}
-	c, err := m.updateConnCounter.GetMetricWithLabelValues(m.name)
+	c, err := m.updateConnCounter.GetMetricWithLabelValues(m.name, code)
 	if err != nil {
 		return
 	}
 	c.Add(float64(1))
-	m.updateConnCounters["default"] = c
+	m.updateConnCounters[code] = c
 }
 func (m *metrics) incPending() {
 	m.pendingMessageGaugeLock.RLock()

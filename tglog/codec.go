@@ -73,7 +73,7 @@ func nextSeq() uint64 {
 }
 
 // BuildV3HeartbeatReq builds a TGLog v3 heartbeat request
-func BuildV3HeartbeatReq(appID, appName, appVer, network string, req *v3.Req) (*v3.Req, error) {
+func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, req *v3.Req) (*v3.Req, error) {
 	ts := timestamppb.Now()
 	if req == nil {
 		req = &v3.Req{}
@@ -93,9 +93,9 @@ func BuildV3HeartbeatReq(appID, appName, appVer, network string, req *v3.Req) (*
 			ProtoVer: protoVer,
 			HostIP:   localIP,
 		},
-		ReqID: ts.String(),
+		ReqID: reqID,
 		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-		Token: "", // todo token
+		Token: token,
 		Sig:   "", // todo sig
 	}
 	req.Req = &v3.Req_HeartbeatReq{
@@ -106,7 +106,7 @@ func BuildV3HeartbeatReq(appID, appName, appVer, network string, req *v3.Req) (*
 }
 
 // BuildV3LogReq builds a TGLog v3 log request
-func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []Message,
+func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, messages []Message,
 	labels map[string]string, annotations map[string]string, req *v3.Req) (*v3.Req, error) {
 	if len(messages) == 0 {
 		return nil, errors.New("input message slice is empty")
@@ -152,7 +152,7 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID string, messages []Mes
 		},
 		ReqID: reqID,
 		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-		Token: "", // todo token
+		Token: token,
 		Sig:   "", // todo sig
 	}
 	req.Req = logReq
