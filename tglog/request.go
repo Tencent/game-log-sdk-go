@@ -3,10 +3,11 @@ package tglog
 import (
 	"bytes"
 	"context"
-	v3 "git.woa.com/tglog/v3/proto/pbgo"
 	"strconv"
 	"strings"
 	"time"
+
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
 	"git.woa.com/tglog/v3/sdk-go/syncx"
 
@@ -143,6 +144,9 @@ func (b *batchReq) encode() ([]byte, error) {
 
 type batchRsp struct {
 	batchID string
+	code    int
+	msg     string
+	seqs    []uint64
 }
 
 func buildBatchID(index string) string {

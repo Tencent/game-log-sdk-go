@@ -1,10 +1,10 @@
+// Package tglog implements the go version of TGLog client
 package tglog
 
 import (
 	"context"
 	"errors"
 	"math"
-	"net"
 	"sync/atomic"
 	"time"
 
@@ -43,7 +43,8 @@ type Callback func(msg Message, err error)
 
 // Client is the interface of a TGLog netClient
 type Client interface {
-	// Send sends the msg synchronously
+	// Send sends the msg synchronously. If you create a V3 client, call SendAsync instead of Send, 'cause
+	// Send in V3 will block to wait for the responses from the server, the delay is unacceptable.
 	Send(ctx context.Context, msg Message) error
 	// SendAsync sends the log asynchronously, if cb is not nil, it will be called after the log is sent.
 	SendAsync(ctx context.Context, msg Message, cb Callback)
@@ -306,7 +307,8 @@ func (c *client) initMetrics() error {
 	return nil
 }
 
-func (c *client) Dial(addr string) (net.Conn, error) {
+func (c *client) Dial(addr string) (gnet.Conn, error) {
+	// return net.Dial(c.options.Network, addr)
 	return c.netClient.Dial(c.options.Network, addr)
 }
 
@@ -345,11 +347,11 @@ func (c *client) createWorker(index int) (*worker, error) {
 	return newWorker(c, index, c.options)
 }
 
-func (c *client) getConn() (net.Conn, error) {
+func (c *client) getConn() (gnet.Conn, error) {
 	return c.connPool.Get()
 }
 
-func (c *client) putConn(conn net.Conn, err error) {
+func (c *client) putConn(conn gnet.Conn, err error) {
 	c.connPool.Put(conn, err)
 }
 
@@ -444,7 +446,6 @@ func (c *client) onResponse(frame []byte) {
 		// c.log.Debug("heartbeat response")
 		return
 	case *v3.Rsp_LogRsp:
-		_ = r
 		batchID := rsp.Header.ReqID
 		index := getWorkerIndex(batchID)
 		// c.log.Debugf("log response, index=%d, batchID=%s", index, batchID)
@@ -452,7 +453,11 @@ func (c *client) onResponse(frame []byte) {
 			c.log.Debugf("invalid worker index from response, index=%d", index)
 			return
 		}
-		c.workers[index].onRsp(batchRsp{batchID: batchID})
+		c.workers[index].onRsp(batchRsp{
+			batchID: batchID,
+			code:    int(rsp.Header.Code),
+			msg:     rsp.Header.Msg,
+			seqs:    r.LogRsp.Seqs})
 	default:
 		return
 	}

@@ -38,7 +38,7 @@ func ParseMessages(raw []byte) ([]Message, error) {
 			continue
 		}
 		name := r[0:index]
-		newEvent := Message{Name: util.BytesToString(name), Payload: r}
+		newEvent := Message{Name: util.BytesToString(name), Payload: append(r, '\n')}
 		output = append(output, newEvent)
 	}
 

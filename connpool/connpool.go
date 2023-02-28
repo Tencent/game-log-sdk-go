@@ -3,17 +3,18 @@ package connpool
 import (
 	"context"
 	"errors"
-	"git.woa.com/tglog/v3/sdk-go/logger"
-	"go.uber.org/atomic"
 	"math"
-	"net"
 	"sync"
 	"time"
+
+	"git.woa.com/tglog/v3/sdk-go/logger"
+	"github.com/panjf2000/gnet/v2"
+	"go.uber.org/atomic"
 )
 
 // Dialer is the interface of a dialer that return a NetConn
 type Dialer interface {
-	Dial(addr string) (net.Conn, error)
+	Dial(addr string) (gnet.Conn, error)
 }
 
 // EndpointRestrictedConnPool is the interface of a simple endpoint restricted connection connChan
@@ -21,8 +22,8 @@ type Dialer interface {
 // not be used anymore, it is useful for holding the connections to a service whose endpoints can
 // be change at runtime.
 type EndpointRestrictedConnPool interface {
-	Get() (net.Conn, error)
-	Put(conn net.Conn, err error)
+	Get() (gnet.Conn, error)
+	Put(conn gnet.Conn, err error)
 	UpdateEndpoints(all, add, del []string)
 	NumPooled() int
 }
@@ -56,7 +57,7 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 	endpoints = append(endpoints, initEndpoints...)
 
 	pool := &connPool{
-		connChan:         make(chan net.Conn, size),
+		connChan:         make(chan gnet.Conn, size),
 		endpoints:        endpoints,
 		connsPerEndpoint: connsPerEndpoint,
 		dialer:           dialer,
@@ -78,7 +79,7 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 
 type connPool struct {
 	sync.RWMutex
-	connChan         chan net.Conn
+	connChan         chan gnet.Conn
 	index            atomic.Uint64
 	endpoints        []string
 	endpointMap      sync.Map
@@ -87,7 +88,7 @@ type connPool struct {
 	log              logger.Logger
 }
 
-func (p *connPool) Get() (net.Conn, error) {
+func (p *connPool) Get() (gnet.Conn, error) {
 	select {
 	case conn := <-p.connChan:
 		return conn, nil
@@ -106,14 +107,14 @@ func (p *connPool) getEndpoint() string {
 	return ep
 }
 
-func (p *connPool) newConn() (net.Conn, error) {
+func (p *connPool) newConn() (gnet.Conn, error) {
 	ep := p.getEndpoint()
 	return p.dialer.Dial(ep)
 }
 
 func (p *connPool) initConns(count int) error {
 	// create some conns and then put them back to the pool
-	conns := make([]net.Conn, 0)
+	conns := make([]gnet.Conn, 0)
 	for i := 0; i < count; i++ {
 		conn, err := p.newConn()
 		if err != nil {
@@ -130,18 +131,18 @@ func (p *connPool) initConns(count int) error {
 	return nil
 }
 
-func (p *connPool) Put(conn net.Conn, err error) {
+func (p *connPool) Put(conn gnet.Conn, err error) {
 	addr := conn.RemoteAddr().String()
 	_, ok := p.endpointMap.Load(addr)
 	if !ok {
-		p.log.Debug("endpoint deleted, close its connection, addr:", addr)
+		p.log.Info("endpoint deleted, close its connection, addr:", addr)
 		CloseConn(conn, 2*time.Minute)
 		return
 	}
 
-	// 如果出错了，先关闭该连接，再尝试补充一个新连接，避免连接数不均衡导致流量均衡
+	// 如果出错了，先关闭该连接，再尝试补充一个新连接，避免连接数不均衡导致流量不均衡
 	if ok && err != nil {
-		p.log.Debug("connection error, close it and try to open a new one, addr:", addr)
+		p.log.Info("connection error, close it and try to open a new one, addr:", addr)
 		CloseConn(conn, 2*time.Minute)
 		newConn, err := p.dialer.Dial(addr)
 		if err != nil {
@@ -179,7 +180,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 	p.Unlock()
 
 	// store new endpoints to map
-	p.log.Debug("add new connections...")
+	p.log.Info("add new connections...")
 	for _, ep := range add {
 		p.endpointMap.Store(ep, struct{}{})
 
@@ -190,7 +191,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 				continue
 			}
 
-			p.log.Debug("endpoint added, open new connection, addr:", ep)
+			p.log.Info("endpoint added, open new connection, addr:", ep)
 			select {
 			case p.connChan <- conn:
 				continue
@@ -212,7 +213,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 	}
 
 	// delete connections for deleted endpoints
-	p.log.Debug("delete old connections...")
+	p.log.Info("delete old connections...")
 	for i := 0; i < len(p.connChan); i++ {
 		conn, ok := <-p.connChan
 		if !ok {
@@ -222,7 +223,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 		addr := conn.RemoteAddr().String()
 		_, ok = delEndpoints[addr]
 		if ok {
-			p.log.Debug("endpoint deleted, close its connection, addr:", addr)
+			p.log.Info("endpoint deleted, close its connection, addr:", addr)
 			CloseConn(conn, 2*time.Minute)
 		} else {
 			p.connChan <- conn
@@ -235,7 +236,7 @@ func (p *connPool) NumPooled() int {
 }
 
 // CloseConn closes a connection after a duration of time
-func CloseConn(conn net.Conn, after time.Duration) {
+func CloseConn(conn gnet.Conn, after time.Duration) {
 	if after <= 0 {
 		conn.Close()
 		return

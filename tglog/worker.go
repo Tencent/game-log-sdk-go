@@ -3,10 +3,11 @@ package tglog
 import (
 	"context"
 	"errors"
-	v3 "git.woa.com/tglog/v3/proto/pbgo"
-	"net"
 	"strconv"
 	"time"
+
+	v3 "git.woa.com/tglog/v3/proto/pbgo"
+	"github.com/panjf2000/gnet/v2"
 
 	"git.woa.com/tglog/v3/sdk-go/syncx"
 
@@ -53,6 +54,8 @@ var (
 	errCodeConnWriteFailed = "10008"
 	errConnReadFailed      = errors.New("conn read failed")
 	errCodeConnReadFailed  = "10009"
+	errServerError         = errors.New("server error")
+	errCodeServerError     = "10010"
 	errCodeUnknown         = "20001"
 )
 
@@ -87,6 +90,9 @@ func getErrorCode(err error) string {
 	if err == errConnReadFailed {
 		return errCodeConnReadFailed
 	}
+	if err == errServerError {
+		return errCodeServerError
+	}
 	return errCodeUnknown
 }
 
@@ -95,7 +101,7 @@ func getErrorCode(err error) string {
 // 其实每次发包时取连接/发包/还连接也可以，但是性能会低一点点，用定时器在服务器域名上下线CLB时更新连接会没有这么及时，但在连接
 // 出错时也做了及时更新，对于TCP是可以及时做到更新的，对于UDP，因为是无连接的，则不能及时更新，考虑到运营时我们连接的是服务器的
 // CLB而不是直连RS，所以是可以接受的。（如果是直连RS，对于UPD来讲，在DNS缓存刷新的这段时间，每次发包都换一个连接也无法避免会
-// 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来）
+// 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来检测连接不可用，但是V1协议是没有响应的，也不好实现。）
 type worker struct {
 	client             *client               // 上层client
 	index              int                   // worker id
@@ -109,6 +115,7 @@ type worker struct {
 	dataSemaphore      syncx.Semaphore       //
 	pendingBatches     map[string]*batchReq  // 待发送批次
 	unackedBatches     map[string]*batchReq  // 待确认批次
+	successBatches     chan *batchReq        // 发送成功管道
 	retryBatches       chan *batchReq        // 重试管道
 	responseBatches    chan batchRsp         // 响应管道
 	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
@@ -133,6 +140,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
+		successBatches:     make(chan *batchReq, opts.MaxPendingMessages),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
@@ -205,6 +213,12 @@ func (w *worker) start() {
 				continue
 			}
 			w.handleRsp(rsp)
+		case batch, ok := <-w.successBatches:
+			// 处理发送成功的批次
+			if !ok {
+				continue
+			}
+			w.handleSuccess(batch)
 		case batch, ok := <-w.retryBatches:
 			// 处理重试的批次
 			if !ok {
@@ -356,10 +370,15 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		return
 	}
 
-	conn := w.getConn()
-	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
-	_, err = conn.Write(b.buffer.Bytes())
-	if err != nil {
+	onOK := func() {
+		// V3协议会有响应，放入待确认队列
+		if w.options.isV3 {
+			w.successBatches <- b
+		} else {
+			b.done(nil)
+		}
+	}
+	onErr := func() {
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send batch failed, error", err)
 		// 网络错误，换一个连接
@@ -370,16 +389,28 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		} else {
 			b.done(errConnWriteFailed)
 		}
-		return
 	}
+	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
+	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
+	conn := w.getConn()
+	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
+		if e != nil {
+			onErr()
+		} else {
+			onOK()
+		}
+		return nil
+	})
 
-	// V3协议会有响应，放入待确认队列
-	if w.options.isV3 {
-		w.unackedBatchCount++
-		w.unackedBatches[b.batchID] = b
-	} else {
-		b.done(nil)
+	if err != nil {
+		onErr()
 	}
+}
+
+func (w *worker) handleSuccess(b *batchReq) {
+	// 发送成功，放入待确认队列，收到响应再删除
+	w.unackedBatchCount++
+	w.unackedBatches[b.batchID] = b
 }
 
 func (w *worker) handleBatchTimeout() {
@@ -453,12 +484,22 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	conn := w.getConn()
-	_, err = conn.Write(bytes)
-	if err != nil {
+	onErr := func() {
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send heartbeat failed")
 		w.updateConn(errConnWriteFailed)
+	}
+
+	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
+	conn := w.getConn()
+	err = conn.AsyncWrite(bytes, func(c gnet.Conn, e error) error {
+		if e != nil {
+			onErr()
+		}
+		return nil
+	})
+	if err != nil {
+		onErr()
 	}
 }
 
@@ -475,7 +516,12 @@ func (w *worker) handleRsp(rsp batchRsp) {
 	}
 	w.log.Debug("worker[", w.index, "] batch done:", batchID)
 	// 释放资源
-	batch.done(nil)
+	if rsp.code == 0 {
+		batch.done(nil)
+	} else {
+		batch.done(errServerError)
+	}
+
 	delete(w.unackedBatches, batchID)
 }
 
@@ -487,6 +533,7 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 		return
 	}
 	// 重试
+	w.log.Info("retry")
 	w.metrics.incRetry()
 	w.sendBatch(batch, retryOnFail)
 }
@@ -553,8 +600,10 @@ func (w *worker) handleClose(req *closeReq) {
 		w.sendTimeoutTicker.Stop()
 		// 释放连接
 		w.client.putConn(w.getConn(), nil)
-		// 停止命令管道
+		// 关闭命令管道
 		close(w.cmdChan)
+		// 关闭请求发送成功管道
+		close(w.successBatches)
 		// 关闭响应接收队列，这个要在读协程停止之后调用
 		close(w.responseBatches)
 		// 通知调用者close操作完成
@@ -599,11 +648,11 @@ func (w *worker) handleUpdateConn() {
 	w.updateConn(nil)
 }
 
-func (w *worker) setConn(conn net.Conn) {
+func (w *worker) setConn(conn gnet.Conn) {
 	w.conn.Store(conn)
 }
-func (w *worker) getConn() net.Conn {
-	return w.conn.Load().(net.Conn)
+func (w *worker) getConn() gnet.Conn {
+	return w.conn.Load().(gnet.Conn)
 }
 
 func (w *worker) setState(state workerState) {

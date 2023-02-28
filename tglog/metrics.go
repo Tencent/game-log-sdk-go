@@ -168,7 +168,7 @@ func (m *metrics) init() error {
 		}
 		m.batchTimeHistogram = are.ExistingCollector.(*prometheus.HistogramVec)
 	}
-	
+
 	return nil
 }
 func (m *metrics) incError(code string) {
