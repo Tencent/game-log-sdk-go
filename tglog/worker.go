@@ -631,9 +631,9 @@ func (w *worker) handleClose(req *closeReq) {
 
 func (w *worker) updateConn(err error) {
 	w.log.Debug("worker[", w.index, "] updateConn")
-	newConn, err := w.client.getConn()
-	if err != nil {
-		w.log.Error("get new conn error:", err)
+	newConn, newErr := w.client.getConn()
+	if newErr != nil {
+		w.log.Error("get new conn error:", newErr)
 		w.metrics.incError(errCodeNewConnFailed)
 		return
 	}
