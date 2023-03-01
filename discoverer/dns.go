@@ -179,7 +179,7 @@ func (d *dnsDiscoverer) lookup() {
 	}
 }
 
-func (d *dnsDiscoverer) update() func() {
+func (d *dnsDiscoverer) update() {
 	wg := sync.WaitGroup{}
 	ticker := time.NewTicker(d.lookupInterval)
 	stopCh := make(chan struct{})
@@ -199,7 +199,7 @@ func (d *dnsDiscoverer) update() func() {
 		}
 	}()
 
-	return func() {
+	d.closeFunc = func() {
 		ticker.Stop()
 		close(stopCh)
 		wg.Wait()
