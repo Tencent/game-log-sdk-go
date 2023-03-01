@@ -27,8 +27,10 @@ var (
 	sdkVersion = "v0.1.0"
 	sequence   atomic.Uint64
 	protoVer   = fmt.Sprintf("%d.%d.%d", v3.ProtoVer_MAJOR, v3.ProtoVer_MINOR, v3.ProtoVer_PATCH)
-	v3ReqPool  *sync.Pool
-	v3RspPool  *sync.Pool
+	// V3ReqPool is the v3 request pool
+	V3ReqPool *sync.Pool
+	// V3RspPool v3 response pool
+	V3RspPool *sync.Pool
 )
 
 func init() {
@@ -39,12 +41,12 @@ func init() {
 	}
 
 	sequence.Store(rand.New(rand.NewSource(time.Now().UnixNano())).Uint64())
-	v3ReqPool = &sync.Pool{
+	V3ReqPool = &sync.Pool{
 		New: func() interface{} {
 			return &v3.Req{}
 		},
 	}
-	v3RspPool = &sync.Pool{
+	V3RspPool = &sync.Pool{
 		New: func() interface{} {
 			return &v3.Rsp{}
 		},

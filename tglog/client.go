@@ -423,8 +423,8 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 }
 
 func (c *client) onResponse(frame []byte) {
-	rsp := v3RspPool.Get().(*v3.Rsp)
-	defer v3RspPool.Put(rsp)
+	rsp := V3RspPool.Get().(*v3.Rsp)
+	defer V3RspPool.Put(rsp)
 
 	rsp, err := DecodeV3Rsp(
 		frame,

@@ -460,8 +460,8 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	req := v3ReqPool.Get().(*v3.Req)
-	defer v3ReqPool.Put(req)
+	req := V3ReqPool.Get().(*v3.Req)
+	defer V3ReqPool.Put(req)
 
 	reqID := buildBatchID(w.indexStr)
 	req, err := BuildV3HeartbeatReq(

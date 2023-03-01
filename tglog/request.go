@@ -110,8 +110,8 @@ func (b *batchReq) encode() ([]byte, error) {
 	}
 
 	if b.options.isV3 {
-		req := v3ReqPool.Get().(*v3.Req)
-		defer v3ReqPool.Put(req)
+		req := V3ReqPool.Get().(*v3.Req)
+		defer V3ReqPool.Put(req)
 
 		req, err := BuildV3LogReq(
 			b.options.AppID,
