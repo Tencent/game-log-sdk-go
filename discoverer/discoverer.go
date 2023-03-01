@@ -1,5 +1,10 @@
 package discoverer
 
+import (
+	"net"
+	"strconv"
+)
+
 // Endpoint is the config of an endpoint
 type Endpoint struct {
 	Addr string
@@ -54,4 +59,9 @@ type Discoverer interface {
 
 	// Close closes the discoverer
 	Close()
+}
+
+// BuildAddr builds a host address
+func BuildAddr(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
