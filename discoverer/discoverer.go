@@ -65,3 +65,8 @@ type Discoverer interface {
 func BuildAddr(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
+
+// BuildAddrString builds a host address
+func BuildAddrString(host, port string) string {
+	return net.JoinHostPort(host, port)
+}
