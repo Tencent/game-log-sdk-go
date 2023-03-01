@@ -127,6 +127,7 @@ type worker struct {
 	metrics            *metrics              // 指标
 	bufferPool         bufferpool.BufferPool // 缓冲池
 	bytePool           bufferpool.BytePool   // 内存池
+	stop               bool                  //
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -176,7 +177,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 }
 
 func (w *worker) start() {
-	for {
+	for !w.stop {
 		select {
 		case req, ok := <-w.cmdChan:
 			if !ok {
@@ -185,7 +186,6 @@ func (w *worker) start() {
 			switch r := req.(type) {
 			case *closeReq:
 				w.handleClose(r)
-				return
 			}
 		case req, ok := <-w.dataChan:
 			if !ok {
@@ -551,6 +551,7 @@ func (w *worker) close() {
 	w.cmdChan <- req
 	// wait
 	<-req.doneCh
+	w.stop = true
 }
 
 func (w *worker) handleClose(req *closeReq) {
