@@ -115,7 +115,7 @@ type worker struct {
 	dataSemaphore      syncx.Semaphore       //
 	pendingBatches     map[string]*batchReq  // 待发送批次
 	unackedBatches     map[string]*batchReq  // 待确认批次
-	successBatches     chan *batchReq        // 发送成功管道
+	sendSuccessBatches chan *batchReq        // 发送成功管道
 	retryBatches       chan *batchReq        // 重试管道
 	responseBatches    chan batchRsp         // 响应管道
 	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
@@ -141,7 +141,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
-		successBatches:     make(chan *batchReq, opts.MaxPendingMessages),
+		sendSuccessBatches: make(chan *batchReq, opts.MaxPendingMessages),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
@@ -170,63 +170,65 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	}
 	w.setConn(conn)
 
-	go w.start()
+	w.start()
 	w.setState(stateReady)
 
 	return w, nil
 }
 
 func (w *worker) start() {
-	for !w.stop {
-		select {
-		case req, ok := <-w.cmdChan:
-			if !ok {
-				continue
+	go func() {
+		for !w.stop {
+			select {
+			case req, ok := <-w.cmdChan:
+				if !ok {
+					continue
+				}
+				switch r := req.(type) {
+				case *closeReq:
+					w.handleClose(r)
+				}
+			case req, ok := <-w.dataChan:
+				if !ok {
+					continue
+				}
+				w.handleSendData(req)
+			case <-w.batchTimeoutTicker.C:
+				// 处理批次超时
+				w.handleBatchTimeout()
+			case <-w.sendTimeoutTicker.C:
+				// 处理发送超时
+				w.handleSendTimeout()
+			case <-w.mapCleanTicker.C:
+				// 定时清理unackedBatches，go语言里map会不停的膨胀
+				w.handleCleanMap()
+			case <-w.heartbeatTicker.C:
+				// 定时发送心跳
+				w.handleSendHeartbeat()
+			case <-w.updateConnTicker.C:
+				// 更新连接
+				w.handleUpdateConn()
+			case rsp, ok := <-w.responseBatches:
+				// 处理响应
+				if !ok {
+					continue
+				}
+				w.handleRsp(rsp)
+			case batch, ok := <-w.sendSuccessBatches:
+				// 处理发送成功的批次
+				if !ok {
+					continue
+				}
+				w.handleSendSuccess(batch)
+			case batch, ok := <-w.retryBatches:
+				// 处理重试的批次
+				if !ok {
+					continue
+				}
+				w.handleRetry(batch, true)
 			}
-			switch r := req.(type) {
-			case *closeReq:
-				w.handleClose(r)
-			}
-		case req, ok := <-w.dataChan:
-			if !ok {
-				continue
-			}
-			w.handleSendData(req)
-		case <-w.batchTimeoutTicker.C:
-			// 处理批次超时
-			w.handleBatchTimeout()
-		case <-w.sendTimeoutTicker.C:
-			// 处理发送超时
-			w.handleSendTimeout()
-		case <-w.mapCleanTicker.C:
-			// 定时清理unackedBatches，go语言里map会不停的膨胀
-			w.handleCleanMap()
-		case <-w.heartbeatTicker.C:
-			// 定时发送心跳
-			w.handleSendHeartbeat()
-		case <-w.updateConnTicker.C:
-			// 更新连接
-			w.handleUpdateConn()
-		case rsp, ok := <-w.responseBatches:
-			// 处理响应
-			if !ok {
-				continue
-			}
-			w.handleRsp(rsp)
-		case batch, ok := <-w.successBatches:
-			// 处理发送成功的批次
-			if !ok {
-				continue
-			}
-			w.handleSuccess(batch)
-		case batch, ok := <-w.retryBatches:
-			// 处理重试的批次
-			if !ok {
-				continue
-			}
-			w.handleRetry(batch, true)
 		}
-	}
+	}()
 }
 
 func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback, flushImmediately bool) {
@@ -373,14 +375,14 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	onOK := func() {
 		// V3协议会有响应，放入待确认队列
 		if w.options.isV3 {
-			w.successBatches <- b
+			w.sendSuccessBatches <- b
 		} else {
 			b.done(nil)
 		}
 	}
-	onErr := func() {
+	onErr := func(e error) {
 		w.metrics.incError(errCodeConnWriteFailed)
-		w.log.Error("send batch failed, error", err)
+		w.log.Error("send batch failed, error", e)
 		// 网络错误，换一个连接
 		w.updateConn(errConnWriteFailed)
 		// 放入重试队列
@@ -395,7 +397,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	conn := w.getConn()
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
 		if e != nil {
-			onErr()
+			onErr(e)
 		} else {
 			onOK()
 		}
@@ -403,14 +405,27 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	})
 
 	if err != nil {
-		onErr()
+		onErr(err)
 	}
 }
 
-func (w *worker) handleSuccess(b *batchReq) {
+func (w *worker) handleSendSuccess(b *batchReq) {
 	// 发送成功，放入待确认队列，收到响应再删除
 	w.unackedBatchCount++
 	w.unackedBatches[b.batchID] = b
+}
+
+func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
+	batch.retries++
+	if batch.retries >= w.options.MaxRetries {
+		batch.done(errSendTimeout)
+		w.log.Debug("to many reties, batch done:", batch.batchID)
+		return
+	}
+	// 重试
+	w.log.Info("retry")
+	w.metrics.incRetry()
+	w.sendBatch(batch, retryOnFail)
 }
 
 func (w *worker) handleBatchTimeout() {
@@ -484,9 +499,9 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	onErr := func() {
+	onErr := func(e error) {
 		w.metrics.incError(errCodeConnWriteFailed)
-		w.log.Error("send heartbeat failed")
+		w.log.Error("send heartbeat failed, err:", e)
 		w.updateConn(errConnWriteFailed)
 	}
 
@@ -494,12 +509,12 @@ func (w *worker) handleSendHeartbeat() {
 	conn := w.getConn()
 	err = conn.AsyncWrite(bytes, func(c gnet.Conn, e error) error {
 		if e != nil {
-			onErr()
+			onErr(e)
 		}
 		return nil
 	})
 	if err != nil {
-		onErr()
+		onErr(err)
 	}
 }
 
@@ -523,19 +538,6 @@ func (w *worker) handleRsp(rsp batchRsp) {
 	}
 
 	delete(w.unackedBatches, batchID)
-}
-
-func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
-	batch.retries++
-	if batch.retries >= w.options.MaxRetries {
-		batch.done(errSendTimeout)
-		w.log.Debug("to many reties, batch done:", batch.batchID)
-		return
-	}
-	// 重试
-	w.log.Info("retry")
-	w.metrics.incRetry()
-	w.sendBatch(batch, retryOnFail)
 }
 
 func (w *worker) close() {
@@ -604,7 +606,7 @@ func (w *worker) handleClose(req *closeReq) {
 		// 关闭命令管道
 		close(w.cmdChan)
 		// 关闭请求发送成功管道
-		close(w.successBatches)
+		close(w.sendSuccessBatches)
 		// 关闭响应接收队列，这个要在读协程停止之后调用
 		close(w.responseBatches)
 		// 通知调用者close操作完成
@@ -630,6 +632,10 @@ func (w *worker) handleClose(req *closeReq) {
 	}
 }
 
+func (w *worker) handleUpdateConn() {
+	w.updateConn(nil)
+}
+
 func (w *worker) updateConn(err error) {
 	w.log.Debug("worker[", w.index, "] updateConn")
 	newConn, newErr := w.client.getConn()
@@ -643,10 +649,6 @@ func (w *worker) updateConn(err error) {
 	w.client.putConn(oldConn, err)
 	w.setConn(newConn)
 	w.metrics.incUpdateConn(getErrorCode(err))
-}
-
-func (w *worker) handleUpdateConn() {
-	w.updateConn(nil)
 }
 
 func (w *worker) setConn(conn gnet.Conn) {
