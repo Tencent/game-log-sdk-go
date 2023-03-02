@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"git.woa.com/tglog/v3/sdk-go/framer"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
@@ -62,7 +64,7 @@ type client struct {
 	curWorkerIndex           atomic.Uint64                       // 当前工作者
 	log                      logger.Logger                       // 日志
 	metrics                  *metrics                            // 指标
-	framer                   framer                              // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
+	framer                   framer.Framer                       // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
 }
 
 // NewV1Client news a TGLog client that use UDP network and V1 proto
@@ -269,12 +271,12 @@ func (c *client) initFramer() error {
 		return nil
 	}
 
-	framer, err := newLengthField(lengthFieldCfg{
-		maxFrameLen:  c.options.MaxFrameLen,
-		fieldOffset:  c.options.LenFieldOffset,
-		fieldLength:  c.options.LenFieldLength,
-		adjustment:   c.options.LenAdjustment,
-		bytesToStrip: c.options.FrameBytesToStrip,
+	framer, err := framer.NewLengthField(framer.LengthFieldCfg{
+		MaxFrameLen:  c.options.MaxFrameLen,
+		FieldOffset:  c.options.LenFieldOffset,
+		FieldLength:  c.options.LenFieldLength,
+		Adjustment:   c.options.LenAdjustment,
+		BytesToStrip: c.options.FrameBytesToStrip,
 	})
 	if err != nil {
 		return err
@@ -394,8 +396,8 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		total := conn.InboundBuffered()
 		buf, _ := conn.Peek(total)
 
-		length, payloadOffset, payloadOffsetEnd, err := c.framer.readFrame(buf)
-		if err == errIncompleteFrame {
+		length, payloadOffset, payloadOffsetEnd, err := c.framer.ReadFrame(buf)
+		if err == framer.ErrIncompleteFrame {
 			break
 		}
 
