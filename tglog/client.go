@@ -11,8 +11,6 @@ import (
 
 	"git.woa.com/tglog/v3/sdk-go/framer"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
 	"git.woa.com/tglog/v3/sdk-go/connpool"
@@ -73,21 +71,9 @@ type client struct {
 func NewV1Client(opts ...Option) (Client, error) {
 	// default v1 options
 	options := &Options{
-		Network:                 "udp",
-		WorkerNum:               4,
-		BatchingMaxPublishDelay: 10 * time.Millisecond,
-		BatchingMaxMessages:     10,
-		BatchingMaxSize:         4096,
-		MaxPendingMessages:      40960,
-		ConnTimeout:             3 * time.Second,
-		BufferPoolSize:          40960,
-		BytePoolSize:            40960,
-		BytePoolWidth:           4096,
-		Logger:                  logger.Std(),
-		MetricsName:             "tglog-go",
-		MetricsRegistry:         prometheus.DefaultRegisterer,
-		isV1:                    true,
-		isUDP:                   true,
+		Network: "udp",
+		isV1:    true,
+		isUDP:   true,
 	}
 
 	for _, o := range opts {
@@ -124,30 +110,17 @@ func NewV1Client(opts ...Option) (Client, error) {
 func NewV3Client(opts ...Option) (Client, error) {
 	// default options
 	options := &Options{
-		Network:                 "udp",
-		WorkerNum:               4,
-		BatchingMaxPublishDelay: 10 * time.Millisecond,
-		BatchingMaxMessages:     10,
-		BatchingMaxSize:         4096,
-		MaxPendingMessages:      40960,
-		ConnTimeout:             3 * time.Second,
-		BufferPoolSize:          40960,
-		BytePoolSize:            40960,
-		BytePoolWidth:           4096,
-		Logger:                  logger.Std(),
-		MetricsName:             "tglog-go",
-		MetricsRegistry:         prometheus.DefaultRegisterer,
-		isV3:                    true,
-		isUDP:                   true,
-		SendTimeout:             10 * time.Second,
-		MaxRetries:              2,
-		Compress:                true,
-		MaxFrameLen:             64 * 1024,
-		LenFieldOffset:          2,
-		LenFieldLength:          4,
-		LenAdjustment:           -6,
-		FrameBytesToStrip:       0,
-		PayloadBytesToTrip:      10,
+		Network:            "udp",
+		isV3:               true,
+		isUDP:              true,
+		MaxRetries:         2,
+		Compress:           true,
+		MaxFrameLen:        64 * 1024,
+		LenFieldOffset:     2,
+		LenFieldLength:     4,
+		LenAdjustment:      -6,
+		FrameBytesToStrip:  0,
+		PayloadBytesToTrip: 10,
 	}
 
 	for _, o := range opts {

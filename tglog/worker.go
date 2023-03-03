@@ -3,6 +3,7 @@ package tglog
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -181,6 +182,13 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 
 func (w *worker) start() {
 	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				w.log.Errorf("panic:", rec)
+				debug.PrintStack()
+			}
+		}()
+
 		for !w.stop {
 			select {
 			case req, ok := <-w.cmdChan:
@@ -383,6 +391,13 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	}
 
 	onErr := func(e error) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				w.log.Error("panic:", rec)
+				debug.PrintStack()
+			}
+		}()
+
 		w.metrics.incError(errCodeConnWriteFailed)
 		w.log.Error("send batch failed, err:", e)
 

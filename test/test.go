@@ -74,7 +74,13 @@ func main() {
 			tglog.WithPort(port),
 			tglog.WithLogger(log.Sugar()),
 			tglog.WithWorkerNum(8),
-			tglog.WithMaxPendingMessages(100000),
+			tglog.WithMaxPendingMessages(200000),
+			tglog.WithSocketSendBufferSize(16*1024*1024),
+			tglog.WithSocketRecvBufferSize(16*1024*1024),
+			tglog.WithWriteBufferSize(16*1024*1024),
+			tglog.WithReadBufferSize(16*1024*1024),
+			tglog.WithBatchingMaxMessages(20),
+			tglog.WithBatchingMaxSize(10*1024),
 		)
 	}
 	if err != nil {

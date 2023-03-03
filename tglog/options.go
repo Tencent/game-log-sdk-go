@@ -1,6 +1,7 @@
 package tglog
 
 import (
+	"math"
 	"time"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
@@ -15,22 +16,22 @@ type Options struct {
 	Network                 string                // 网络，默认：udp
 	Host                    string                // 服务器主机，可以是IP也可以是域名
 	Port                    int                   // 服务器端口
-	WorkerNum               int                   // 工作线程，默认：4
+	WorkerNum               int                   // 工作线程，默认：8
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
 	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：10
 	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：4K
-	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：40960
+	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：102400
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
 	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
-	WriteBufferSize         int                   // 网络层写缓冲大小，默认：64K
-	ReadBufferSize          int                   // 网络层读缓冲大小，默认：64K
-	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：系统内核配置
-	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：系统内核配置
+	WriteBufferSize         int                   // 网络层写缓冲大小，默认：8M
+	ReadBufferSize          int                   // 网络层读缓冲大小，默认：8M
+	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：8M
+	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：2M
+	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：204800
+	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：204800
+	BytePoolWidth           int                   // 接收响应或者压缩请求时用的缓冲内存块大小，默认：与BatchingMaxSize相同
 	BufferPool              bufferpool.BufferPool // 打解包用的缓冲池，为空的话内部初始化一个
 	BytePool                bufferpool.BytePool   // 打解包用的内存池，为空的话内部初始化一个
-	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：4096
-	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：128
-	BytePoolWidth           int                   // 接收响应或者压缩请求时用的缓冲内存块大小，默认：与BatchingMaxSize相同
 	Logger                  logger.Logger         // 调试日志，默认：控制台
 	MetricsName             string                // metrics唯一名称，用于隔离指标，默认：tglog-go，如果一个进程创建了多个client对象需要配置不同的名字，否则指标名冲突会导致进程异常
 	MetricsRegistry         prometheus.Registerer // 指标存储器，默认：prometheus.DefaultRegisterer
@@ -41,7 +42,7 @@ type Options struct {
 	AppID                   string                // 业务ID，暂时没什么用途，V3协议有效，默认：空
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
-	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：10000ms
+	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：30000ms
 	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
@@ -58,13 +59,22 @@ type Options struct {
 
 // ValidateAndSetDefault validates an options and set up the default values
 func (options *Options) ValidateAndSetDefault() error {
+	if options.Network == "" {
+		options.Network = "udp"
+	}
+
 	if options.Host == "" {
 		// 未指定服务器域名
 		return ErrInvalidHost
 	}
+
 	if options.Port <= 0 || options.Port > 65535 {
 		// 未指定服务器端口
 		return ErrInvalidPort
+	}
+
+	if options.WorkerNum <= 0 {
+		options.WorkerNum = 8
 	}
 
 	options.isUDP = isUDP(options.Network)
@@ -77,11 +87,86 @@ func (options *Options) ValidateAndSetDefault() error {
 		return ErrInvalidProtoVer
 	}
 
+	if options.BatchingMaxPublishDelay == 0 {
+		options.BatchingMaxPublishDelay = 10 * time.Millisecond
+	}
+
+	if options.BatchingMaxMessages <= 0 {
+		options.BatchingMaxMessages = 10
+	}
+
+	if options.BatchingMaxSize <= 0 {
+		options.BatchingMaxSize = 4096
+	}
+
 	if options.BatchingMaxSize > maxUDPReqSizeV1 && options.isUDP {
 		options.BatchingMaxSize = maxUDPReqSizeV1
 	}
 	if options.BatchingMaxSize > maxTCPReqSizeV1 && options.isTCP {
 		options.BatchingMaxSize = maxTCPReqSizeV1
+	}
+
+	if options.MaxPendingMessages <= 0 {
+		options.MaxPendingMessages = 102400
+	}
+
+	if options.ConnTimeout <= 0 {
+		options.ConnTimeout = 3 * time.Second
+	}
+
+	if options.WriteBufferSize <= 0 {
+		options.WriteBufferSize = 8 * 1024 * 1024
+	}
+
+	if options.ReadBufferSize <= 0 {
+		options.ReadBufferSize = 2 * 1024 * 1024
+	}
+
+	if options.SocketSendBufferSize <= 0 {
+		options.SocketSendBufferSize = 8 * 1024 * 1024
+	}
+
+	if options.SocketRecvBufferSize <= 0 {
+		options.SocketRecvBufferSize = 2 * 1024 * 1024
+	}
+
+	if options.BufferPoolSize <= 0 {
+		options.BufferPoolSize = 204800
+	}
+
+	if options.BytePoolSize <= 0 {
+		options.BytePoolSize = 204800
+	}
+
+	if options.BytePoolWidth <= 0 {
+		options.BytePoolWidth = int(math.Max(4096, float64(options.BatchingMaxSize)))
+	}
+
+	if options.BufferPool == nil {
+		options.BufferPool = bufferpool.NewBuffer(options.BufferPoolSize)
+	}
+	if options.BytePool == nil {
+		options.BytePool = bufferpool.NewBytePool(options.BytePoolSize, options.BytePoolWidth)
+	}
+
+	if options.Logger == nil {
+		options.Logger = logger.Std()
+	}
+
+	if options.MetricsName == "" {
+		options.MetricsName = "tglog-go"
+	}
+
+	if options.MetricsRegistry == nil {
+		options.MetricsRegistry = prometheus.DefaultRegisterer
+	}
+
+	if options.SendTimeout == 0 {
+		options.SendTimeout = 30 * time.Second
+	}
+
+	if options.MaxRetries <= 0 {
+		options.MaxRetries = 2
 	}
 
 	if options.NoFrameHeader && options.isV3 {
@@ -94,25 +179,13 @@ func (options *Options) ValidateAndSetDefault() error {
 			return ErrV3CENoFrameHeader
 		}
 	}
+
 	if options.Encrypt && options.EncryptKey == "" {
 		return ErrInvalidEncryptKey
 	}
 
-	if options.BufferPool == nil {
-		options.BufferPool = bufferpool.NewBuffer(options.BufferPoolSize)
-	}
-	if options.BytePool == nil {
-		options.BytePool = bufferpool.NewBytePool(options.BytePoolSize, options.BytePoolWidth)
-	}
-	if options.Logger == nil {
-		options.Logger = logger.Std()
-	}
-
-	if options.SendTimeout == 0 {
-		options.SendTimeout = 10 * time.Second
-	}
-	if options.BatchingMaxPublishDelay == 0 {
-		options.BatchingMaxPublishDelay = 10 * time.Millisecond
+	if options.MaxFrameLen <= 0 {
+		options.MaxFrameLen = 64 * 1024
 	}
 
 	return nil
