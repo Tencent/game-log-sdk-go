@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Options is the TGLog netClient config options
+// Options is the TGLog go client config options
 type Options struct {
 	Network                 string                // 网络，默认：udp
 	Host                    string                // 服务器主机，可以是IP也可以是域名

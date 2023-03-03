@@ -46,14 +46,14 @@ var (
 	errCodeSendQueueIsFull = "10004"
 	errContextExpired      = errors.New("message context expired")
 	errCodeContextExpired  = "10005"
-	errLogToLong           = errors.New("input log is too long")
-	errCodeLogToLong       = "10006"
 	errNewConnFailed       = errors.New("new conn failed")
-	errCodeNewConnFailed   = "10007"
+	errCodeNewConnFailed   = "10006"
 	errConnWriteFailed     = errors.New("conn write failed")
-	errCodeConnWriteFailed = "10008"
+	errCodeConnWriteFailed = "10007"
 	errConnReadFailed      = errors.New("conn read failed")
-	errCodeConnReadFailed  = "10009"
+	errCodeConnReadFailed  = "10008"
+	errLogToLong           = errors.New("input log is too long")
+	errCodeLogToLong       = "10009"
 	errServerError         = errors.New("server error")
 	errCodeServerError     = "10010"
 	errCodeUnknown         = "20001"
@@ -109,20 +109,20 @@ type worker struct {
 	options            *Options              // 配置
 	state              atomic.Int32          // 状态
 	log                logger.Logger         // 日志
-	conn               atomic.Value          // 用原子操作更新异常的连接
+	conn               atomic.Value          // 连接
 	cmdChan            chan interface{}      // 命令管道
 	dataChan           chan *sendDataReq     // 数据管道
-	dataSemaphore      syncx.Semaphore       //
+	dataSemaphore      syncx.Semaphore       // 排队控制信号量
 	pendingBatches     map[string]*batchReq  // 待发送批次
 	unackedBatches     map[string]*batchReq  // 待确认批次
-	sendSuccessBatches chan *batchReq        // 发送成功管道
-	retryBatches       chan *batchReq        // 重试管道
+	sendFailedBatches  chan *batchReq        // 发送成功管道，接收batch发送成功事件
+	retryBatches       chan *batchReq        // 重试管道，接收待重试的batch
 	responseBatches    chan batchRsp         // 响应管道
 	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
 	sendTimeoutTicker  *time.Ticker          // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
 	heartbeatTicker    *time.Ticker          // 心跳定时器
 	mapCleanTicker     *time.Ticker          // map清理定时器
-	updateConnTicker   *time.Ticker          // 更新连接定时器，定时从连接池获取连接替换现有连接。
+	updateConnTicker   *time.Ticker          // 更新连接定时器，定时从连接池获取连接替换现有连接
 	unackedBatchCount  int                   // map清理计数器
 	metrics            *metrics              // 指标
 	bufferPool         bufferpool.BufferPool // 缓冲池
@@ -132,16 +132,16 @@ type worker struct {
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	w := &worker{
-		client:             cli,
 		index:              index,
 		indexStr:           strconv.Itoa(index),
+		client:             cli,
 		options:            opts,
 		cmdChan:            make(chan interface{}),
 		dataChan:           make(chan *sendDataReq, opts.MaxPendingMessages),
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
-		sendSuccessBatches: make(chan *batchReq, opts.MaxPendingMessages),
+		sendFailedBatches:  make(chan *batchReq, opts.MaxPendingMessages),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
@@ -161,16 +161,19 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		w.heartbeatTicker.Stop()
 		w.mapCleanTicker.Stop()
 	}
-
+	// 更新为初始状态
 	w.setState(stateInit)
 
+	// 获取连接
 	conn, err := cli.getConn()
 	if err != nil {
 		return nil, err
 	}
 	w.setConn(conn)
 
+	// 启动处理协程
 	w.start()
+	// 更新为就绪状态
 	w.setState(stateReady)
 
 	return w, nil
@@ -208,24 +211,24 @@ func (w *worker) start() {
 			case <-w.updateConnTicker.C:
 				// 更新连接
 				w.handleUpdateConn()
-			case rsp, ok := <-w.responseBatches:
-				// 处理响应
-				if !ok {
-					continue
-				}
-				w.handleRsp(rsp)
-			case batch, ok := <-w.sendSuccessBatches:
+			case batch, ok := <-w.sendFailedBatches:
 				// 处理发送成功的批次
 				if !ok {
 					continue
 				}
-				w.handleSendSuccess(batch)
+				w.handleSendFailed(batch)
 			case batch, ok := <-w.retryBatches:
 				// 处理重试的批次
 				if !ok {
 					continue
 				}
 				w.handleRetry(batch, true)
+			case rsp, ok := <-w.responseBatches:
+				// 处理响应
+				if !ok {
+					continue
+				}
+				w.handleRsp(rsp)
 			}
 		}
 	}()
@@ -373,16 +376,30 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	}
 
 	onOK := func() {
-		// V3协议会有响应，放入待确认队列
-		if w.options.isV3 {
-			w.sendSuccessBatches <- b
-		} else {
+		// V1不需要响应，发送成功就认为成功
+		if w.options.isV1 {
 			b.done(nil)
 		}
 	}
+
 	onErr := func(e error) {
 		w.metrics.incError(errCodeConnWriteFailed)
-		w.log.Error("send batch failed, error", e)
+		w.log.Error("send batch failed, err:", e)
+
+		// 已经处于关闭状态
+		if w.getState() == stateClosed {
+			b.done(errConnWriteFailed)
+			return
+		}
+
+		// 重要：AsyncWrite调用成功，batch就会被放入w.unackedBatches，现在出错了，要把它从w.unackedBatches中删除掉，
+		// 因为这个回调是异步并发的，不能直接修改w.unackedBatches，并发写会panic，这里把batch放入管道，在管道的接收端做
+		// 删除操作
+		if w.options.isV3 {
+			// V3协议才需要把batch从w.unackedBatches中删除
+			w.sendFailedBatches <- b
+		}
+
 		// 网络错误，换一个连接
 		w.updateConn(errConnWriteFailed)
 		// 放入重试队列
@@ -392,6 +409,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 			b.done(errConnWriteFailed)
 		}
 	}
+
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
@@ -406,13 +424,21 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 
 	if err != nil {
 		onErr(err)
+		return
+	}
+
+	// V3协议才需要等响应确认
+	if w.options.isV3 {
+		// 重要：因为是异步发送，AsyncWrite调用成功并不表示发送成功，尽管还没送成功，这里提前放入待确认队列，如果AsyncWrite最终发送失败，
+		// 再在AsyncWrite的回调onErr()中删除，如果AsyncWrite最终发送成功，则在收到响应后再删除
+		w.unackedBatchCount++
+		w.unackedBatches[b.batchID] = b
 	}
 }
 
-func (w *worker) handleSendSuccess(b *batchReq) {
-	// 发送成功，放入待确认队列，收到响应再删除
-	w.unackedBatchCount++
-	w.unackedBatches[b.batchID] = b
+func (w *worker) handleSendFailed(b *batchReq) {
+	// 发送失败，从待确认列表中删除
+	delete(w.unackedBatches, b.batchID)
 }
 
 func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
@@ -422,8 +448,8 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 		w.log.Debug("to many reties, batch done:", batch.batchID)
 		return
 	}
+
 	// 重试
-	w.log.Info("retry")
 	w.metrics.incRetry()
 	w.sendBatch(batch, retryOnFail)
 }
@@ -457,12 +483,14 @@ func (w *worker) handleCleanMap() {
 	if w.unackedBatchCount < defaultMapCleanThreshold {
 		return
 	}
+
 	w.log.Debug("clean map")
 	// 创建新的map，将旧数据复制过来
 	newMap := make(map[string]*batchReq)
 	for k, v := range w.unackedBatches {
 		newMap[k] = v
 	}
+
 	// 用新的map替换旧的map
 	w.unackedBatches = newMap
 	// 计数器清
@@ -492,8 +520,6 @@ func (w *worker) handleSendHeartbeat() {
 	}
 
 	bb := w.bufferPool.Get()
-	defer w.bufferPool.Put(bb)
-
 	bytes, err := EncodeV3Req(req, w.options.NoFrameHeader, false, false, "", bb, false)
 	if err != nil {
 		return
@@ -511,14 +537,23 @@ func (w *worker) handleSendHeartbeat() {
 		if e != nil {
 			onErr(e)
 		}
+		// 发送完，回收
+		w.bufferPool.Put(bb)
 		return nil
 	})
+
 	if err != nil {
 		onErr(err)
+		// 发送失败，回收
+		w.bufferPool.Put(bb)
 	}
 }
 
 func (w *worker) onRsp(rsp batchRsp) {
+	// 已经处于关闭状态
+	if w.getState() == stateClosed {
+		return
+	}
 	w.responseBatches <- rsp
 }
 
@@ -529,6 +564,7 @@ func (w *worker) handleRsp(rsp batchRsp) {
 		w.log.Warn("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
 		return
 	}
+
 	w.log.Debug("worker[", w.index, "] batch done:", batchID)
 	// 释放资源
 	if rsp.code == 0 {
@@ -549,9 +585,10 @@ func (w *worker) close() {
 	req := &closeReq{
 		doneCh: make(chan struct{}),
 	}
-
+	// 构造一个close请求，放入管道
 	w.cmdChan <- req
-	// wait
+
+	// 等待close完成
 	<-req.doneCh
 	w.stop = true
 }
@@ -561,8 +598,6 @@ func (w *worker) handleClose(req *closeReq) {
 		close(req.doneCh)
 		return
 	}
-	// 此时，外部已经不能写入请求
-	w.setState(stateClosed)
 
 	// 停止batch超时处理，所有请求都会被立即发出去
 	w.batchTimeoutTicker.Stop()
@@ -580,24 +615,36 @@ func (w *worker) handleClose(req *closeReq) {
 	for s := range w.dataChan {
 		w.handleSendData(s)
 	}
-	// 消费掉w.pendingBatches中的数据，待发送的batch马上发送，只发送一次，失败不重试
+
+	// 此时，所有未发送的数据在w.pendingBatches中，消费掉w.pendingBatches中的数据，将待发送的batch马上发送，只发送一次，失败不重试
 	for tid, batch := range w.pendingBatches {
 		delete(w.pendingBatches, tid)
 		w.sendBatch(batch, false) // 失败不再重试
 	}
-	// 处理掉w.retryBatches中的数据，先起一个协程关闭retryBatches，当没有数据时，下面的for循环消费就不会阻塞
-	go func() {
-		close(w.retryBatches)
-	}()
-	for r := range w.retryBatches {
+
+	/*
+		// 处理掉w.retryBatches中的数据，先起一个协程关闭retryBatches，当没有数据时，下面的for循环消费就不会阻塞
+		go func() {
+			close(w.retryBatches)
+		}()
+		for r := range w.retryBatches {
+			w.handleRetry(r, false) // 失败不再重试
+		}
+	*/
+	// 因为是异步发送，在这之前发送出去失败的在回调中还有可能会写w.retryBatches，这里不能直接关闭它
+	for i := 0; i < len(w.retryBatches); i++ {
+		r := <-w.retryBatches
 		w.handleRetry(r, false) // 失败不再重试
 	}
+
 	// 此时，只有w.unackedBatches中有数据，这些数据还没有收到响应，给他们注册一个回调，
 	// 当所有数据都收到响应或者超时的时候释放所有资源，这里因为在同一个协程内，没有其协程
 	// 在修改w.unackedBatches，在这里修改它是安全的
+
 	// 获取剩余数据量
 	left := atomic.NewInt32(int32(len(w.unackedBatches)))
 	w.log.Debug("worker:", w.index, "unacked:", left.Load())
+
 	closeAll := func() {
 		// 关闭发送超时处理定时器
 		w.sendTimeoutTicker.Stop()
@@ -605,19 +652,26 @@ func (w *worker) handleClose(req *closeReq) {
 		w.client.putConn(w.getConn(), nil)
 		// 关闭命令管道
 		close(w.cmdChan)
-		// 关闭请求发送成功管道
-		close(w.sendSuccessBatches)
-		// 关闭响应接收队列，这个要在读协程停止之后调用
+		// 设置为关闭状态，此后，w.retryBatches/w.sendFailedBatches/w.responseBatches都不再可写，否则会panic
+		// 所以，写这些管道的代码之前，要先检查一下当前的状态是不是stateClosed，是的话就不能再写了
+		w.setState(stateClosed)
+		// 关闭重试管道
+		close(w.retryBatches)
+		// 关闭发送失败管道
+		close(w.sendFailedBatches)
+		// 关闭响应接收管道
 		close(w.responseBatches)
 		// 通知调用者close操作完成
 		close(req.doneCh)
 	}
+
 	// 没有数据了，直接关闭退出
 	if left.Load() <= 0 {
 		w.log.Debug("no batch left, close now")
 		closeAll()
 		return
 	}
+
 	for id, batch := range w.unackedBatches {
 		batch.callback = func() {
 			// 收到响应或者超时，计数器-1，当<=0时，说明全部处理完成
@@ -654,6 +708,7 @@ func (w *worker) updateConn(err error) {
 func (w *worker) setConn(conn gnet.Conn) {
 	w.conn.Store(conn)
 }
+
 func (w *worker) getConn() gnet.Conn {
 	return w.conn.Load().(gnet.Conn)
 }

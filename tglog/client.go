@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +66,7 @@ type client struct {
 	log                      logger.Logger                       // 日志
 	metrics                  *metrics                            // 指标
 	framer                   framer.Framer                       // TCP分帧器，V1协议不回包，V3协议TCP传输才有用
+	closeOnce                sync.Once
 }
 
 // NewV1Client news a TGLog client that use UDP network and V1 proto
@@ -286,6 +288,16 @@ func (c *client) initFramer() error {
 	return nil
 }
 
+func (c *client) initMetrics() error {
+	m, err := newMetrics(c.options.MetricsName, c.options.MetricsRegistry)
+	if err != nil {
+		return err
+	}
+
+	c.metrics = m
+	return nil
+}
+
 func (c *client) initWorkers() error {
 	c.workers = make([]*worker, 0, c.options.WorkerNum)
 	for i := 0; i < c.options.WorkerNum; i++ {
@@ -299,18 +311,7 @@ func (c *client) initWorkers() error {
 	return nil
 }
 
-func (c *client) initMetrics() error {
-	m, err := newMetrics(c.options.MetricsName, c.options.MetricsRegistry)
-	if err != nil {
-		return err
-	}
-
-	c.metrics = m
-	return nil
-}
-
 func (c *client) Dial(addr string) (gnet.Conn, error) {
-	// return net.Dial(c.options.Network, addr)
 	return c.netClient.Dial(c.options.Network, addr)
 }
 
@@ -332,17 +333,19 @@ func (c *client) getWorker() *worker {
 }
 
 func (c *client) Close() {
-	if c.discoverer != nil {
-		c.discoverer.Close()
-	}
+	c.closeOnce.Do(func() {
+		if c.discoverer != nil {
+			c.discoverer.Close()
+		}
 
-	for _, w := range c.workers {
-		w.close()
-	}
+		for _, w := range c.workers {
+			w.close()
+		}
 
-	if c.netClient != nil {
-		_ = c.netClient.Stop()
-	}
+		if c.netClient != nil {
+			_ = c.netClient.Stop()
+		}
+	})
 }
 
 func (c *client) createWorker(index int) (*worker, error) {
