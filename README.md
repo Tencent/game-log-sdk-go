@@ -113,118 +113,195 @@ func ExampleClient_SendAsync() {
 
 服务器：16C64G/tlinux2
 
+内核参数：
+
+```shell
+echo "net.core.rmem_max=256000000" >> /etc/sysctl.conf
+echo "net.core.wmem_max=256000000" >> /etc/sysctl.conf
+echo "net.core.rmem_default=104857600" >> /etc/sysctl.conf
+echo "net.core.wmem_default=104857600" >> /etc/sysctl.conf
+echo "net.ipv4.udp_rmem_min=104857600" >> /etc/sysctl.conf
+echo "net.ipv4.udp_wmem_min=104857600" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_wmem=262144 114688000 131071000" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_rmem=262144 114688000 131071000" >> /etc/sysctl.conf
+echo "net.core.netdev_max_backlog=10000" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_max_syn_backlog=10000" >> /etc/sysctl.conf
+echo "net.core.somaxconn=4096" >> /etc/sysctl.conf
+sysctl -p
+```
+
 #### 软件
 
 测试程序：test/test.go
 
 配置：
 
-- 工作者数量（发送协程）：8；
-- 单工作者消息缓冲：200000；
+- 工作者数量（发送协程）：8个；
+- 单工作者消息缓冲：200000条；
 - 数据发送量：1000,000条；
 - 单条数据大小：350B；
-- 测试令牌桶限速：500000；
+- 测试令牌桶限速：500000QPS；
+- 单批发送日志条数：20条；
+- 单发送日志字节数：10K；
 
 ### 数据
 
 #### UDP/V1/同步
 
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test 
+{"level":"info","ts":1678101917.0138125,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678101917.0346782,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v1
+network: udp
 rate: 500000
-send time: 10.496602519
-total time: 10.496624936
+async: false
+send time: 10.229377178
+total time: 10.22937747
 sent: 1000000
-QPS: 95268.71790667933
+QPS: 97757.65953820062
 success: 1000000
 failed: 0
+{"level":"info","ts":1678101930.5279508,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
 #### TCP/V1/同步
 
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20002
+{"level":"info","ts":1678102160.9546793,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678102160.977543,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v1
+network: tcp
 rate: 500000
-send time: 22.862611294
-total time: 22.862634889
+async: false
+send time: 22.547490811
+total time: 22.547491006
 sent: 1000000
-QPS: 43739.49043297431
+QPS: 44350.8326373828
 success: 1000000
 failed: 0
+{"level":"info","ts":1678102186.962323,"caller":"tglog/client.go:342","msg":"client shutdown"}
+```
+
+#### UDP/V1/异步
+```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -async
+{"level":"info","ts":1678102264.2002535,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678102264.2173593,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v1
+network: udp
+rate: 500000
+async: true
+send time: 1.990934325
+total time: 1.999216429
+sent: 1000000
+QPS: 500195.9695280195
+success: 1000000
+failed: 0
+{"level":"info","ts":1678102269.2219534,"caller":"tglog/client.go:342","msg":"client shutdown"}
+```
+
+#### TCP/V1/异步
+```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20002 -async
+{"level":"info","ts":1678102306.7442007,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678102306.7653472,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v1
+network: tcp
+rate: 500000
+async: true
+send time: 1.991454805
+total time: 1.9989812630000001
+sent: 1000000
+QPS: 500254.81404424744
+success: 1000000
+failed: 0
+{"level":"info","ts":1678102312.2622147,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
 #### UDP/V3/同步
 
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -port 20003 -version v3
+{"level":"info","ts":1678102519.2096934,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678102519.2303233,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v3
+network: udp
 rate: 500000
-send time: 779.226950438
-total time: 779.226973905
+async: false
+send time: 190.505852228
+total time: 190.505852404
 sent: 1000000
-QPS: 1283.323131113677
+QPS: 5249.1825704090725
 success: 1000000
 failed: 0
+{"level":"info","ts":1678102712.7758658,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
 
 #### TCP/V3/同步
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20004 -version v3
+{"level":"info","ts":1678102772.9078648,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678102772.9297812,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v3
+network: tcp
 rate: 500000
-send time: 827.179308563
-total time: 827.179331024
+async: false
+send time: 229.195823717
+total time: 229.195823956
 sent: 1000000
-QPS: 1208.9276925743031
+QPS: 4363.0812409216305
 success: 1000000
 failed: 0
-```
+{"level":"info","ts":1678103005.4738598,"caller":"tglog/client.go:342","msg":"client shutdown"}
 
-#### UDP/V1/异步
-```shell
-rate: 500000
-send time: 1.990584709
-total time: 1.997754459
-sent: 1000000
-QPS: 500562.01626528316
-success: 1000000
-failed: 0
-```
-
-#### TCP/V1/同步
-```shell
-rate: 500000
-send time: 1.991016065
-total time: 1.9992270840000002
-sent: 1000000
-QPS: 500193.3037037627
-success: 1000000
-failed: 0
 ```
 
 #### UDP/V3/异步
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -port 20003 -version v3 -async
+{"level":"info","ts":1678103119.8860106,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678103119.9029434,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v3
+network: udp
 rate: 500000
-send time: 1.991210455
-total time: 1.997472665
+async: true
+send time: 1.99093862
+total time: 1.996926798
 sent: 1000000
-QPS: 500632.6331879991
+QPS: 500769.48288817547
 success: 1000000
 failed: 0
+{"level":"info","ts":1678103125.4031549,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
-#### TCP/V3/同步
+#### TCP/V3/异步
 ```shell
+[gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20004 -version v3 -async
+{"level":"info","ts":1678103181.8079915,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1678103181.829597,"caller":"tglog/client.go:337","msg":"client boot"}
+version: v3
+network: tcp
 rate: 500000
-send time: 1.990421295
-total time: 4.695109748
+async: true
+send time: 1.99090643
+total time: 3.09498625
 sent: 1000000
-QPS: 212987.566568806
+QPS: 323103.21249407815
 success: 1000000
 failed: 0
+{"level":"info","ts":1678103188.3307564,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
 
 > 说明：
 >
-> - V1协议同步UDP与TCP性能相差大是因为gnet网络库对UDP和TCP的处理方式不一样，对于UDP，它立即调用sendTo()发送，对于TCP，它会构造一个异步的任务，将数据放入应用层队列，再由调度器调度直到最终写入内核，这个调度有个时间差；
-> - V3协议的同步性能与V1版本相差如此之大，是因为V3协议需要等待响应，收到响应才认为一个请求结束，才能发送一下个请求，而V1版本只管发送，不收响应，且V3需要进行PB编解码；
-> - V3协议异步UDP与TCP性能相差大主要还是gnet网络库对UDP和TCP的处理方式不一样引起的，另外，UDP接收方也无须拆包，当把批次发送的数据量调大时（每批20条或者10K日志以减少拆包次数），TCP也能以较高的速率发送数据（QPS：35W）。
+> - 以上测试数据完整率100%；
+> - V1协议同步UDP与TCP性能相差大是因为gnet网络库对UDP和TCP的处理方式不一样，对于UDP，它立即调用sendTo()发送，对于TCP，它会构造一个异步的任务，将数据放入gnet内部队列，再由调度器调度直到最终写入内核，这个调度有个时间差；
+> - V3协议与V1协议的同步性能相差如此之大，是因为V3协议需要等待响应，收到响应才认为一个请求结束，才能发送一下个请求，而V1版本只管发送，不收响应，且V3需要进行PB编解码；
+> - V3协议异步UDP与TCP性能相差大主要还是gnet网络库对UDP和TCP的处理方式不一样引起的，另外，UDP接收方也无须拆包，当把批次发送的数据量调大时可以提高发送性能。
 
 
 
