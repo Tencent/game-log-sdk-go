@@ -55,8 +55,10 @@ var (
 	errCodeConnReadFailed  = "10008"
 	errLogToLong           = errors.New("input log is too long")
 	errCodeLogToLong       = "10009"
+	errBadLog              = errors.New("input log is invalid")
+	errCodeBadLog          = "10010"
 	errServerError         = errors.New("server error")
-	errCodeServerError     = "10010"
+	errCodeServerError     = "10011"
 	errCodeUnknown         = "20001"
 )
 
@@ -90,6 +92,9 @@ func getErrorCode(err error) string {
 	}
 	if err == errConnReadFailed {
 		return errCodeConnReadFailed
+	}
+	if err == errBadLog {
+		return errCodeBadLog
 	}
 	if err == errServerError {
 		return errCodeServerError
@@ -250,6 +255,11 @@ func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback
 		flushImmediately: flushImmediately,
 		publishTime:      time.Now(),
 		metrics:          w.metrics,
+	}
+
+	if len(msg.Payload) == 0 {
+		req.done(errBadLog)
+		return
 	}
 
 	// 已经关闭
