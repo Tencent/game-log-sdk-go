@@ -49,6 +49,7 @@ var (
 	errServerError     = &errNo{code: 10011, strCode: "10001", message: "server error"}
 	errServerPanic     = &errNo{code: 10012, strCode: "10001", message: "server panic"}
 	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unkonw"}
+	jitterRand         = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 type errNo struct {
@@ -408,7 +409,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		// 因为这个回调是异步并发的，不能直接修改w.unackedBatches，并发写会panic，这里把batch放入管道，在管道的接收端做
 		// 删除操作
 		if w.options.isV3 {
-			// V3协议才需要把batch从w.unackedBatches中删除
+			// V3协议才需要把batch从w.unackedBatches中删除，往w.sendFailedBatches写入数据可以使得bathch从w.unackedBatches中删除
 			w.sendFailedBatches <- b
 		}
 
@@ -416,8 +417,8 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		w.updateConn(errConnWriteFailed)
 		// 放入重试队列
 		if retryOnFail {
-			// todo backoff and jitter???
-			w.retryBatches <- b
+			// w.retryBatches <- b
+			w.backoffRetry(context.Background(), b)
 		} else {
 			b.done(errConnWriteFailed)
 		}
@@ -454,6 +455,57 @@ func (w *worker) handleSendFailed(b *batchReq) {
 	delete(w.unackedBatches, b.batchID)
 }
 
+func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
+	if batch.retries >= w.options.MaxRetries {
+		batch.done(errSendTimeout)
+		w.log.Debug("to many reties, batch done:", batch.batchID)
+		return
+	}
+
+	// 已经处于关闭状态
+	if w.getState() == stateClosed {
+		batch.done(errSendTimeout)
+		return
+	}
+
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				w.log.Error("panic:", rec)
+				debug.PrintStack()
+				w.metrics.incError(errServerPanic.getStrCode())
+			}
+		}()
+
+		minBackoff := 100 * time.Millisecond
+		maxBackoff := 10 * time.Second
+		jitterPercent := 0.2
+
+		backoff := time.Duration(batch.retries+1) * minBackoff
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+
+		jitter := jitterRand.Float64() * float64(backoff) * jitterPercent
+		backoff += time.Duration(jitter)
+
+		select {
+		case <-time.After(backoff):
+			// 再次检查是否已经处于关闭状态
+			if w.getState() == stateClosed {
+				batch.done(errSendTimeout)
+				return
+			}
+
+			// 放入重试队列
+			w.retryBatches <- batch
+		case <-ctx.Done():
+			// 进程退出
+			batch.done(errSendTimeout)
+		}
+	}()
+}
+
 func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 	batch.retries++
 	if batch.retries >= w.options.MaxRetries {
@@ -483,7 +535,8 @@ func (w *worker) handleSendTimeout() {
 		if time.Since(batch.lastSendTime) > w.options.SendTimeout {
 			w.log.Debug("worker[", w.index, "] send timeout, resend it now:", batch.batchID, "batchID:", batchID)
 			// 放入重试队列
-			w.retryBatches <- batch
+			// w.retryBatches <- batch
+			w.backoffRetry(context.Background(), batch)
 			// 因为重传的时候会再次放入w.unackedBatches，这里先删除
 			delete(w.unackedBatches, batchID)
 			w.metrics.incTimeout(w.indexStr)

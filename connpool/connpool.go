@@ -17,10 +17,10 @@ type Dialer interface {
 	Dial(addr string) (gnet.Conn, error)
 }
 
-// EndpointRestrictedConnPool is the interface of a simple endpoint restricted connection connChan
+// EndpointRestrictedConnPool is the interface of a simple endpoint restricted connection connPool
 // the connection's remote address must be in an endpoint list, if not, it will be closed and can
 // not be used anymore, it is useful for holding the connections to a service whose endpoints can
-// be change at runtime.
+// be changed at runtime.
 type EndpointRestrictedConnPool interface {
 	Get() (gnet.Conn, error)
 	Put(conn gnet.Conn, err error)
@@ -153,6 +153,8 @@ func (p *connPool) Put(conn gnet.Conn, err error) {
 		case p.connChan <- newConn:
 			return
 		case <-time.After(1 * time.Second):
+			// connChan is full, close the new conn
+			newConn.Close()
 			return
 		}
 	}
@@ -196,6 +198,8 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 			case p.connChan <- conn:
 				continue
 			case <-time.After(1 * time.Second):
+				// connChan is full, close the new conn
+				conn.Close()
 				continue
 			}
 		}
