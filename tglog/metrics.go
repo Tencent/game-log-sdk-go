@@ -62,6 +62,7 @@ func newMetrics(name string, reg prometheus.Registerer) (*metrics, error) {
 	}
 	return m, nil
 }
+
 func (m *metrics) init() error {
 	m.errorCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_error_count",
@@ -79,7 +80,7 @@ func (m *metrics) init() error {
 	m.retryCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_retry_count",
 		Help: "Counter of retry batches",
-	}, []string{"name"})
+	}, []string{"name", "worker"})
 	err = m.registry.Register(m.retryCounter)
 	if err != nil {
 		are, ok := err.(prometheus.AlreadyRegisteredError)
@@ -92,7 +93,7 @@ func (m *metrics) init() error {
 	m.timeoutCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "tglog_go_timeout_count",
 		Help: "Counter of timeout batches",
-	}, []string{"name"})
+	}, []string{"name", "worker"})
 	err = m.registry.Register(m.timeoutCounter)
 	if err != nil {
 		are, ok := err.(prometheus.AlreadyRegisteredError)
@@ -131,7 +132,7 @@ func (m *metrics) init() error {
 	m.pendingMessageGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tglog_go_pending_msg_gauge",
 		Help: "Gauge of pending message",
-	}, []string{"name"})
+	}, []string{"name", "worker"})
 	err = m.registry.Register(m.pendingMessageGauge)
 	if err != nil {
 		are, ok := err.(prometheus.AlreadyRegisteredError)
@@ -171,6 +172,7 @@ func (m *metrics) init() error {
 
 	return nil
 }
+
 func (m *metrics) incError(code string) {
 	m.errorCounterLock.RLock()
 	c, ok := m.errorCounters[code]
@@ -193,9 +195,10 @@ func (m *metrics) incError(code string) {
 	c.Add(float64(1))
 	m.errorCounters[code] = c
 }
-func (m *metrics) incRetry() {
+
+func (m *metrics) incRetry(worker string) {
 	m.retryCounterLock.RLock()
-	c, ok := m.retryCounters["default"]
+	c, ok := m.retryCounters[worker]
 	m.retryCounterLock.RUnlock()
 	if ok {
 		c.Add(float64(1))
@@ -203,21 +206,22 @@ func (m *metrics) incRetry() {
 	}
 	m.retryCounterLock.Lock()
 	defer m.retryCounterLock.Unlock()
-	c, ok = m.retryCounters["default"]
+	c, ok = m.retryCounters[worker]
 	if ok {
 		c.Add(float64(1))
 		return
 	}
-	c, err := m.retryCounter.GetMetricWithLabelValues(m.name)
+	c, err := m.retryCounter.GetMetricWithLabelValues(m.name, worker)
 	if err != nil {
 		return
 	}
 	c.Add(float64(1))
-	m.retryCounters["default"] = c
+	m.retryCounters[worker] = c
 }
-func (m *metrics) incTimeout() {
+
+func (m *metrics) incTimeout(worker string) {
 	m.timeoutCounterLock.RLock()
-	c, ok := m.timeoutCounters["default"]
+	c, ok := m.timeoutCounters[worker]
 	m.timeoutCounterLock.RUnlock()
 	if ok {
 		c.Add(float64(1))
@@ -225,18 +229,19 @@ func (m *metrics) incTimeout() {
 	}
 	m.timeoutCounterLock.Lock()
 	defer m.timeoutCounterLock.Unlock()
-	c, ok = m.timeoutCounters["default"]
+	c, ok = m.timeoutCounters[worker]
 	if ok {
 		c.Add(float64(1))
 		return
 	}
-	c, err := m.timeoutCounter.GetMetricWithLabelValues(m.name)
+	c, err := m.timeoutCounter.GetMetricWithLabelValues(m.name, worker)
 	if err != nil {
 		return
 	}
 	c.Add(float64(1))
-	m.timeoutCounters["default"] = c
+	m.timeoutCounters[worker] = c
 }
+
 func (m *metrics) incMessage(code string) {
 	m.messageCounterLock.RLock()
 	c, ok := m.messageCounters[code]
@@ -259,6 +264,7 @@ func (m *metrics) incMessage(code string) {
 	c.Add(float64(1))
 	m.messageCounters[code] = c
 }
+
 func (m *metrics) incUpdateConn(code string) {
 	m.updateConnCounterLock.RLock()
 	c, ok := m.updateConnCounters[code]
@@ -281,9 +287,10 @@ func (m *metrics) incUpdateConn(code string) {
 	c.Add(float64(1))
 	m.updateConnCounters[code] = c
 }
-func (m *metrics) incPending() {
+
+func (m *metrics) incPending(worker string) {
 	m.pendingMessageGaugeLock.RLock()
-	c, ok := m.pendingMessageGauges["default"]
+	c, ok := m.pendingMessageGauges[worker]
 	m.pendingMessageGaugeLock.RUnlock()
 	if ok {
 		c.Add(float64(1))
@@ -291,21 +298,22 @@ func (m *metrics) incPending() {
 	}
 	m.pendingMessageGaugeLock.Lock()
 	defer m.pendingMessageGaugeLock.Unlock()
-	c, ok = m.pendingMessageGauges["default"]
+	c, ok = m.pendingMessageGauges[worker]
 	if ok {
 		c.Add(float64(1))
 		return
 	}
-	c, err := m.pendingMessageGauge.GetMetricWithLabelValues(m.name)
+	c, err := m.pendingMessageGauge.GetMetricWithLabelValues(m.name, worker)
 	if err != nil {
 		return
 	}
 	c.Add(float64(1))
-	m.pendingMessageGauges["default"] = c
+	m.pendingMessageGauges[worker] = c
 }
-func (m *metrics) decPending() {
+
+func (m *metrics) decPending(worker string) {
 	m.pendingMessageGaugeLock.RLock()
-	c, ok := m.pendingMessageGauges["default"]
+	c, ok := m.pendingMessageGauges[worker]
 	m.pendingMessageGaugeLock.RUnlock()
 	if ok {
 		c.Dec()
@@ -313,18 +321,19 @@ func (m *metrics) decPending() {
 	}
 	m.pendingMessageGaugeLock.Lock()
 	defer m.pendingMessageGaugeLock.Unlock()
-	c, ok = m.pendingMessageGauges["default"]
+	c, ok = m.pendingMessageGauges[worker]
 	if ok {
 		c.Dec()
 		return
 	}
-	c, err := m.pendingMessageGauge.GetMetricWithLabelValues(m.name)
+	c, err := m.pendingMessageGauge.GetMetricWithLabelValues(m.name, worker)
 	if err != nil {
 		return
 	}
 	c.Dec()
-	m.pendingMessageGauges["default"] = c
+	m.pendingMessageGauges[worker] = c
 }
+
 func (m *metrics) observeSize(code string, value int) {
 	m.batchSizeHistogramLock.RLock()
 	o, ok := m.batchSizeHistograms[code]
@@ -347,6 +356,7 @@ func (m *metrics) observeSize(code string, value int) {
 	o.Observe(float64(value))
 	m.batchSizeHistograms[code] = o
 }
+
 func (m *metrics) observeTime(code string, value int64) {
 	m.batchTimeHistogramLock.RLock()
 	o, ok := m.batchTimeHistograms[code]

@@ -37,6 +37,7 @@ var (
 	ErrV3TCPNoFrameHeader = errors.New("NoFrameHeader it must be false when protocol is V3 and network is TCP")
 	ErrV3CENoFrameHeader  = errors.New("NoFrameHeader it must be false when protocol is V3 and compress or encrypt is true")
 	ErrInvalidEncryptKey  = errors.New("invalid encrypt key")
+	ErrNoAvailableWorker  = errors.New("no available worker")
 )
 
 // Callback is the callback func that will be called when Client finish sending the message
@@ -290,19 +291,40 @@ func (c *client) Dial(addr string) (gnet.Conn, error) {
 
 func (c *client) Send(ctx context.Context, msg Message) error {
 	worker := c.getWorker()
+	if worker == nil {
+		return ErrNoAvailableWorker
+	}
 	return worker.send(ctx, msg)
 }
 
 func (c *client) SendAsync(ctx context.Context, msg Message, cb Callback) {
 	worker := c.getWorker()
+	if worker == nil {
+		if cb != nil {
+			cb(msg, ErrNoAvailableWorker)
+		}
+		return
+	}
+
 	worker.sendAsync(ctx, msg, cb)
 }
 
 func (c *client) getWorker() *worker {
-	index := c.curWorkerIndex.Load()
-	w := c.workers[index%uint64(len(c.workers))]
-	c.curWorkerIndex.Add(1)
-	return w
+	for i := 0; i < c.options.WorkerNum; i++ {
+		index := c.curWorkerIndex.Load()
+		w := c.workers[index%uint64(len(c.workers))]
+		c.curWorkerIndex.Add(1)
+
+		if w.available() {
+			return w
+		} else if i == c.options.WorkerNum-1 {
+			return w
+		} else {
+			time.Sleep(1 * time.Millisecond)
+			continue
+		}
+	}
+	return nil
 }
 
 func (c *client) Close() {
@@ -378,7 +400,7 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		}
 
 		if err != nil {
-			c.metrics.incError(errCodeConnReadFailed)
+			c.metrics.incError(errConnReadFailed.getStrCode())
 			c.log.Error("invalid packet from stream connection, close it, err:", err)
 			// 读失败，关闭连接
 			return gnet.Close
@@ -387,7 +409,7 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		frame, _ := conn.Peek(length)
 		_, err = conn.Discard(length)
 		if err != nil {
-			c.metrics.incError(errCodeConnReadFailed)
+			c.metrics.incError(errConnReadFailed.getStrCode())
 			c.log.Error("discard connection stream failed, err", err)
 			// 读失败，关闭连接
 			return gnet.Close

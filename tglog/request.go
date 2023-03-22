@@ -23,9 +23,10 @@ type sendDataReq struct {
 	publishTime      time.Time
 	semaphore        syncx.Semaphore
 	metrics          *metrics
+	workerID         string
 }
 
-func (r *sendDataReq) done(err error) {
+func (r *sendDataReq) done(err error, errCode string) {
 	if r.semaphore != nil {
 		r.semaphore.Release()
 	}
@@ -36,10 +37,12 @@ func (r *sendDataReq) done(err error) {
 
 	if r.metrics != nil {
 		if r.semaphore != nil {
-			r.metrics.decPending()
+			r.metrics.decPending(r.workerID)
 		}
-		code := getErrorCode(err)
-		r.metrics.incMessage(code)
+		if errCode == "" {
+			errCode = getErrorCode(err)
+		}
+		r.metrics.incMessage(errCode)
 	}
 }
 
@@ -69,8 +72,9 @@ func (b *batchReq) append(r *sendDataReq) {
 }
 
 func (b *batchReq) done(err error) {
+	errorCode := getErrorCode(err)
 	for _, req := range b.dataReqs {
-		req.done(err)
+		req.done(err, errorCode)
 	}
 	if b.callback != nil {
 		b.callback()
@@ -80,9 +84,8 @@ func (b *batchReq) done(err error) {
 		b.buffer = nil
 	}
 	if b.metrics != nil {
-		code := getErrorCode(err)
-		b.metrics.observeTime(code, time.Since(b.batchTime).Milliseconds())
-		b.metrics.observeSize(code, b.dataSize)
+		b.metrics.observeTime(errorCode, time.Since(b.batchTime).Milliseconds())
+		b.metrics.observeSize(errorCode, b.dataSize)
 	}
 }
 

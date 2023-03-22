@@ -2,7 +2,7 @@ package tglog
 
 import (
 	"context"
-	"errors"
+	"math/rand"
 	"runtime/debug"
 	"strconv"
 	"time"
@@ -19,10 +19,9 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval  = 60
-	defaultUpdateConnInterval = 60
-	defaultMapCleanInterval   = 20
-	defaultMapCleanThreshold  = 500000
+	defaultHeartbeatInterval = 60
+	defaultMapCleanInterval  = 20
+	defaultMapCleanThreshold = 500000
 )
 
 type workerState int32
@@ -36,70 +35,51 @@ const (
 )
 
 var (
-	errCodeOK              = "0"
-	errSendTimeout         = errors.New("message send timeout")
-	errCodeSendTimeout     = "10001"
-	errSendFailed          = errors.New("message send failed")
-	errCodeSendFailed      = "10002"
-	errProducerClosed      = errors.New("producer already been closed")
-	errCodeProducerClosed  = "10003"
-	errSendQueueIsFull     = errors.New("producer send queue is full")
-	errCodeSendQueueIsFull = "10004"
-	errContextExpired      = errors.New("message context expired")
-	errCodeContextExpired  = "10005"
-	errNewConnFailed       = errors.New("new conn failed")
-	errCodeNewConnFailed   = "10006"
-	errConnWriteFailed     = errors.New("conn write failed")
-	errCodeConnWriteFailed = "10007"
-	errConnReadFailed      = errors.New("conn read failed")
-	errCodeConnReadFailed  = "10008"
-	errLogToLong           = errors.New("input log is too long")
-	errCodeLogToLong       = "10009"
-	errBadLog              = errors.New("input log is invalid")
-	errCodeBadLog          = "10010"
-	errServerError         = errors.New("server error")
-	errCodeServerError     = "10011"
-	errCodeUnknown         = "20001"
+	errOK              = &errNo{code: 0, strCode: "0", message: "OK"}
+	errSendTimeout     = &errNo{code: 10001, strCode: "10001", message: "message send timeout"}
+	errSendFailed      = &errNo{code: 10002, strCode: "10001", message: "message send failed"}
+	errProducerClosed  = &errNo{code: 10003, strCode: "10001", message: "producer already been closed"}
+	errSendQueueIsFull = &errNo{code: 10004, strCode: "10001", message: "producer send queue is full"}
+	errContextExpired  = &errNo{code: 10005, strCode: "10001", message: "message context expired"}
+	errNewConnFailed   = &errNo{code: 10006, strCode: "10001", message: "new conn failed"}
+	errConnWriteFailed = &errNo{code: 10007, strCode: "10001", message: "conn write failed"}
+	errConnReadFailed  = &errNo{code: 10008, strCode: "10001", message: "conn read failed"}
+	errLogToLong       = &errNo{code: 10009, strCode: "10001", message: "input log is too long"}
+	errBadLog          = &errNo{code: 10010, strCode: "10001", message: "input log is invalid"}
+	errServerError     = &errNo{code: 10011, strCode: "10001", message: "server error"}
+	errServerPanic     = &errNo{code: 10012, strCode: "10001", message: "server panic"}
+	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unkonw"}
 )
+
+type errNo struct {
+	code    int
+	strCode string
+	message string
+}
+
+func (e *errNo) Error() string {
+	return e.message
+}
+
+func (e *errNo) getCode() int {
+	return e.code
+}
+
+func (e *errNo) getStrCode() string {
+	return e.strCode
+}
 
 func getErrorCode(err error) string {
 	if err == nil {
-		return errCodeOK
+		return errOK.getStrCode()
 	}
-	if err == errSendTimeout {
-		return errCodeSendTimeout
+
+	switch t := err.(type) {
+	case *errNo:
+		return t.getStrCode()
+	default:
+		return errUnknown.getStrCode()
 	}
-	if err == errSendFailed {
-		return errCodeSendFailed
-	}
-	if err == errProducerClosed {
-		return errCodeProducerClosed
-	}
-	if err == errSendQueueIsFull {
-		return errCodeSendQueueIsFull
-	}
-	if err == errContextExpired {
-		return errCodeContextExpired
-	}
-	if err == errLogToLong {
-		return errCodeLogToLong
-	}
-	if err == errNewConnFailed {
-		return errCodeNewConnFailed
-	}
-	if err == errConnWriteFailed {
-		return errCodeConnWriteFailed
-	}
-	if err == errConnReadFailed {
-		return errCodeConnReadFailed
-	}
-	if err == errBadLog {
-		return errCodeBadLog
-	}
-	if err == errServerError {
-		return errCodeServerError
-	}
-	return errCodeUnknown
 }
 
 // 说明：
@@ -154,7 +134,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		sendTimeoutTicker:  time.NewTicker(opts.SendTimeout),
 		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
 		mapCleanTicker:     time.NewTicker(defaultMapCleanInterval * time.Second),
-		updateConnTicker:   time.NewTicker(defaultUpdateConnInterval * time.Second),
+		updateConnTicker:   time.NewTicker(time.Duration(30+rand.Intn(50)) * time.Second), // 随机一点
 		metrics:            cli.metrics,
 		bufferPool:         opts.BufferPool,
 		bytePool:           opts.BytePool,
@@ -185,12 +165,17 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	return w, nil
 }
 
+func (w *worker) available() bool {
+	return w.dataSemaphore.Available() > 0
+}
+
 func (w *worker) start() {
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Errorf("panic:", rec)
 				debug.PrintStack()
+				w.metrics.incError(errServerPanic.getStrCode())
 			}
 		}()
 
@@ -255,26 +240,27 @@ func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback
 		flushImmediately: flushImmediately,
 		publishTime:      time.Now(),
 		metrics:          w.metrics,
+		workerID:         w.indexStr,
 	}
 
 	if len(msg.Payload) == 0 {
-		req.done(errBadLog)
+		req.done(errBadLog, "")
 		return
 	}
 
 	// 已经关闭
 	if w.getState() != stateReady {
-		req.done(errProducerClosed)
+		req.done(errProducerClosed, "")
 		return
 	}
 
 	// 日志太长
 	if len(msg.Payload) > maxUDPReqSizeV1 && w.options.isUDP {
-		req.done(errLogToLong)
+		req.done(errLogToLong, "")
 		return
 	}
 	if len(msg.Payload) > maxTCPReqSizeV1 && w.options.isTCP {
-		req.done(errLogToLong)
+		req.done(errLogToLong, "")
 		return
 	}
 
@@ -282,13 +268,13 @@ func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback
 	if w.options.BlockIfQueueIsFull {
 		if !w.dataSemaphore.Acquire(ctx) {
 			w.log.Warn("queue is full, worker index:", w.index)
-			req.done(errContextExpired)
+			req.done(errContextExpired, "")
 			return
 		}
 	} else {
 		if !w.dataSemaphore.TryAcquire() {
 			w.log.Warn("queue is full, worker index:", w.index)
-			req.done(errSendQueueIsFull)
+			req.done(errSendQueueIsFull, "")
 			return
 		}
 	}
@@ -296,7 +282,7 @@ func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback
 	// 保存信号量，放入管道，当请求done的时候，自动释放信号量
 	req.semaphore = w.dataSemaphore
 	w.dataChan <- req
-	w.metrics.incPending()
+	w.metrics.incPending(w.indexStr)
 }
 
 func (w *worker) send(ctx context.Context, msg Message) error {
@@ -405,10 +391,11 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 			if rec := recover(); rec != nil {
 				w.log.Error("panic:", rec)
 				debug.PrintStack()
+				w.metrics.incError(errServerPanic.getStrCode())
 			}
 		}()
 
-		w.metrics.incError(errCodeConnWriteFailed)
+		w.metrics.incError(errConnWriteFailed.getStrCode())
 		w.log.Error("send batch failed, err:", e)
 
 		// 已经处于关闭状态
@@ -429,6 +416,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		w.updateConn(errConnWriteFailed)
 		// 放入重试队列
 		if retryOnFail {
+			// todo backoff and jitter???
 			w.retryBatches <- b
 		} else {
 			b.done(errConnWriteFailed)
@@ -475,7 +463,7 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 	}
 
 	// 重试
-	w.metrics.incRetry()
+	w.metrics.incRetry(w.indexStr)
 	w.sendBatch(batch, retryOnFail)
 }
 
@@ -498,7 +486,7 @@ func (w *worker) handleSendTimeout() {
 			w.retryBatches <- batch
 			// 因为重传的时候会再次放入w.unackedBatches，这里先删除
 			delete(w.unackedBatches, batchID)
-			w.metrics.incTimeout()
+			w.metrics.incTimeout(w.indexStr)
 		}
 	}
 }
@@ -551,7 +539,7 @@ func (w *worker) handleSendHeartbeat() {
 	}
 
 	onErr := func(e error) {
-		w.metrics.incError(errCodeConnWriteFailed)
+		w.metrics.incError(errConnWriteFailed.getStrCode())
 		w.log.Error("send heartbeat failed, err:", e)
 		w.updateConn(errConnWriteFailed)
 	}
@@ -720,7 +708,7 @@ func (w *worker) updateConn(err error) {
 	newConn, newErr := w.client.getConn()
 	if newErr != nil {
 		w.log.Error("get new conn error:", newErr)
-		w.metrics.incError(errCodeNewConnFailed)
+		w.metrics.incError(errNewConnFailed.getStrCode())
 		return
 	}
 

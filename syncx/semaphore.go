@@ -47,6 +47,13 @@ type Semaphore interface {
 	// Correct usage of a semaphore is established by programming convention
 	// in the application.
 	Release()
+
+	// Cap gets the max permits of a semaphore
+	Cap() int32
+
+	// Available gets the available permits of a semaphore, it just a snapshot, not an
+	// accurate value.
+	Available() int32
 }
 
 type semaphore struct {
@@ -106,4 +113,13 @@ func (s *semaphore) Release() {
 		// Unblock the next in line to acquire the semaphore
 		s.ch <- true
 	}
+}
+
+func (s *semaphore) Cap() int32 {
+	return s.maxPermits
+}
+
+func (s *semaphore) Available() int32 {
+	currentPermits := atomic.LoadInt32(&s.permits)
+	return s.maxPermits - currentPermits
 }
