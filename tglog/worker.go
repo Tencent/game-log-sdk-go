@@ -48,6 +48,7 @@ var (
 	errBadLog          = &errNo{code: 10010, strCode: "10001", message: "input log is invalid"}
 	errServerError     = &errNo{code: 10011, strCode: "10001", message: "server error"}
 	errServerPanic     = &errNo{code: 10012, strCode: "10001", message: "server panic"}
+	errAllWorkerBusy   = &errNo{code: 10013, strCode: "10003", message: "all workers are busy"}
 	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unknown"}
 	jitterRand         = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
