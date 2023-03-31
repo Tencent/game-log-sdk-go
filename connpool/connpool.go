@@ -132,7 +132,17 @@ func (p *connPool) initConns(count int) error {
 }
 
 func (p *connPool) Put(conn gnet.Conn, err error) {
-	addr := conn.RemoteAddr().String()
+	if conn == nil {
+		return
+	}
+
+	remoteAddr := conn.RemoteAddr()
+	if remoteAddr == nil {
+		p.log.Error("conn is not nil but remote address is nil")
+		return
+	}
+
+	addr := remoteAddr.String()
 	_, ok := p.endpointMap.Load(addr)
 	if !ok {
 		p.log.Info("endpoint deleted, close its connection, addr:", addr)
