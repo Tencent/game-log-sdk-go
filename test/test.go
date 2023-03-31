@@ -23,6 +23,7 @@ var (
 	rate    int
 	async   bool
 	sendNum int
+	file    string
 )
 
 func randMsg(msgs []tglog.Message) tglog.Message {
@@ -42,6 +43,7 @@ func main() {
 	flag.IntVar(&rate, "rate", 500000, "request send rate")
 	flag.BoolVar(&async, "async", false, "async send or not")
 	flag.IntVar(&sendNum, "send-num", 1000000, "request send number")
+	flag.StringVar(&file, "file", "./sendlogdemo.log", "log file to send")
 	flag.Parse()
 
 	var client tglog.Client
@@ -88,7 +90,7 @@ func main() {
 		return
 	}
 
-	bytes, err := os.ReadFile("./sendlogdemo.log")
+	bytes, err := os.ReadFile(file)
 	if err != nil {
 		fmt.Println(err)
 		return
