@@ -37,18 +37,18 @@ const (
 var (
 	errOK              = &errNo{code: 0, strCode: "0", message: "OK"}
 	errSendTimeout     = &errNo{code: 10001, strCode: "10001", message: "message send timeout"}
-	errSendFailed      = &errNo{code: 10002, strCode: "10001", message: "message send failed"}
-	errProducerClosed  = &errNo{code: 10003, strCode: "10001", message: "producer already been closed"}
-	errSendQueueIsFull = &errNo{code: 10004, strCode: "10001", message: "producer send queue is full"}
-	errContextExpired  = &errNo{code: 10005, strCode: "10001", message: "message context expired"}
-	errNewConnFailed   = &errNo{code: 10006, strCode: "10001", message: "new conn failed"}
-	errConnWriteFailed = &errNo{code: 10007, strCode: "10001", message: "conn write failed"}
-	errConnReadFailed  = &errNo{code: 10008, strCode: "10001", message: "conn read failed"}
-	errLogToLong       = &errNo{code: 10009, strCode: "10001", message: "input log is too long"}
-	errBadLog          = &errNo{code: 10010, strCode: "10001", message: "input log is invalid"}
-	errServerError     = &errNo{code: 10011, strCode: "10001", message: "server error"}
-	errServerPanic     = &errNo{code: 10012, strCode: "10001", message: "server panic"}
-	errAllWorkerBusy   = &errNo{code: 10013, strCode: "10003", message: "all workers are busy"}
+	errSendFailed      = &errNo{code: 10002, strCode: "10002", message: "message send failed"}
+	errProducerClosed  = &errNo{code: 10003, strCode: "10003", message: "producer already been closed"}
+	errSendQueueIsFull = &errNo{code: 10004, strCode: "10004", message: "producer send queue is full"}
+	errContextExpired  = &errNo{code: 10005, strCode: "10005", message: "message context expired"}
+	errNewConnFailed   = &errNo{code: 10006, strCode: "10006", message: "new conn failed"}
+	errConnWriteFailed = &errNo{code: 10007, strCode: "10007", message: "conn write failed"}
+	errConnReadFailed  = &errNo{code: 10008, strCode: "10008", message: "conn read failed"}
+	errLogToLong       = &errNo{code: 10009, strCode: "10009", message: "input log is too long"}
+	errBadLog          = &errNo{code: 10010, strCode: "10010", message: "input log is invalid"}
+	errServerError     = &errNo{code: 10011, strCode: "10011", message: "server error"}
+	errServerPanic     = &errNo{code: 10012, strCode: "10012", message: "server panic"}
+	errAllWorkerBusy   = &errNo{code: 10013, strCode: "10013", message: "all workers are busy"}
 	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unknown"}
 	jitterRand         = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
