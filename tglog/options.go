@@ -18,17 +18,17 @@ type Options struct {
 	Port                    int                   // 服务器端口
 	WorkerNum               int                   // 工作线程，默认：8
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
-	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：20
-	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：10K
-	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：102400
+	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：10
+	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：4K
+	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：409600
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
 	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
 	WriteBufferSize         int                   // 网络层写缓冲大小，默认：16M
 	ReadBufferSize          int                   // 网络层读缓冲大小，默认：16M
 	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：16M
 	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：16M
-	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：204800
-	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：204800
+	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：409600
+	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：409600
 	BytePoolWidth           int                   // 接收响应或者压缩请求时用的缓冲内存块大小，默认：与BatchingMaxSize相同
 	BufferPool              bufferpool.BufferPool // 打解包用的缓冲池，为空的话内部初始化一个
 	BytePool                bufferpool.BytePool   // 打解包用的内存池，为空的话内部初始化一个
@@ -107,7 +107,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.MaxPendingMessages <= 0 {
-		options.MaxPendingMessages = 102400
+		options.MaxPendingMessages = 409600
 	}
 
 	if options.ConnTimeout <= 0 {
@@ -131,11 +131,11 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.BufferPoolSize <= 0 {
-		options.BufferPoolSize = 204800
+		options.BufferPoolSize = 409600
 	}
 
 	if options.BytePoolSize <= 0 {
-		options.BytePoolSize = 204800
+		options.BytePoolSize = 409600
 	}
 
 	if options.BytePoolWidth <= 0 {
