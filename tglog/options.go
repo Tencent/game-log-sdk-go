@@ -162,7 +162,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.SendTimeout == 0 {
-		options.SendTimeout = 5 * time.Second
+		options.SendTimeout = 10 * time.Second
 	}
 
 	if options.MaxRetries <= 0 {
