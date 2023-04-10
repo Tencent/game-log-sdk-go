@@ -177,7 +177,7 @@ func (w *worker) start() {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Errorf("panic:", rec)
-				debug.PrintStack()
+				w.log.Error(string(debug.Stack()))
 				w.metrics.incError(errServerPanic.getStrCode())
 			}
 		}()
@@ -393,7 +393,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Error("panic:", rec)
-				debug.PrintStack()
+				w.log.Error(string(debug.Stack()))
 				w.metrics.incError(errServerPanic.getStrCode())
 			}
 		}()
@@ -474,7 +474,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Error("panic:", rec)
-				debug.PrintStack()
+				w.log.Error(string(debug.Stack()))
 				w.metrics.incError(errServerPanic.getStrCode())
 			}
 		}()
