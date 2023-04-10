@@ -49,6 +49,7 @@ var (
 	errServerError     = &errNo{code: 10011, strCode: "10011", message: "server error"}
 	errServerPanic     = &errNo{code: 10012, strCode: "10012", message: "server panic"}
 	errAllWorkerBusy   = &errNo{code: 10013, strCode: "10013", message: "all workers are busy"}
+	errNoMatchReq4Rsp  = &errNo{code: 10014, strCode: "10014", message: "no match unacknowledged request for response"}
 	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unknown"}
 	jitterRand         = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
@@ -115,7 +116,7 @@ type worker struct {
 	metrics            *metrics              // 指标
 	bufferPool         bufferpool.BufferPool // 缓冲池
 	bytePool           bufferpool.BytePool   // 内存池
-	stop               bool                  //
+	stop               bool                  // 是否停止
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -629,6 +630,7 @@ func (w *worker) handleRsp(rsp batchRsp) {
 	batch, ok := w.unackedBatches[batchID]
 	if !ok {
 		w.log.Warn("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
+		w.metrics.incError(errNoMatchReq4Rsp.strCode)
 		return
 	}
 

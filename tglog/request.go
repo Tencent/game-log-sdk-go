@@ -84,6 +84,9 @@ func (b *batchReq) done(err error) {
 		b.buffer = nil
 	}
 	if b.metrics != nil {
+		if errorCode != errOK.strCode {
+			b.metrics.incError(errorCode)
+		}
 		b.metrics.observeTime(errorCode, time.Since(b.batchTime).Milliseconds())
 		b.metrics.observeSize(errorCode, b.dataSize)
 	}
