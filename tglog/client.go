@@ -316,9 +316,9 @@ func (c *client) getWorker() *worker {
 		c.curWorkerIndex.Add(1)
 
 		if w.available() {
-			c.metrics.incError(errAllWorkerBusy.strCode)
 			return w
 		} else if i == c.options.WorkerNum-1 {
+			c.metrics.incError(errAllWorkerBusy.strCode)
 			return w
 		} else {
 			time.Sleep(1 * time.Millisecond)
