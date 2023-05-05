@@ -51,7 +51,6 @@ var (
 	errAllWorkerBusy   = &errNo{code: 10013, strCode: "10013", message: "all workers are busy"}
 	errNoMatchReq4Rsp  = &errNo{code: 10014, strCode: "10014", message: "no match unacknowledged request for response"}
 	errUnknown         = &errNo{code: 20001, strCode: "20001", message: "unknown"}
-	jitterRand         = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 type errNo struct {
@@ -488,6 +487,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			backoff = maxBackoff
 		}
 
+		jitterRand := rand.New(rand.NewSource(time.Now().UnixNano()))
 		jitter := jitterRand.Float64() * float64(backoff) * jitterPercent
 		backoff += time.Duration(jitter)
 
