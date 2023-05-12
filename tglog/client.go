@@ -366,12 +366,12 @@ func (c *client) OnShutdown(e gnet.Engine) {
 }
 
 func (c *client) OnOpen(conn gnet.Conn) ([]byte, gnet.Action) {
-	c.log.Debug("connection opened")
+	c.log.Debug("connection opened", conn.RemoteAddr())
 	return nil, gnet.None
 }
 
 func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
-	c.log.Debug("connection closed")
+	c.log.Warn("connection closed", conn.RemoteAddr())
 	return gnet.None
 }
 
