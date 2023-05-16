@@ -42,7 +42,7 @@ type Options struct {
 	AppID                   string                // 业务ID，暂时没什么用途，V3协议有效，默认：空
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
-	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：20000ms
+	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：30000ms
 	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
@@ -162,7 +162,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.SendTimeout == 0 {
-		options.SendTimeout = 20 * time.Second
+		options.SendTimeout = 30 * time.Second
 	}
 
 	if options.MaxRetries <= 0 {

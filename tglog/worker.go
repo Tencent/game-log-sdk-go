@@ -119,6 +119,11 @@ type worker struct {
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
+	sendTimeout := opts.SendTimeout / 2
+	if sendTimeout == 0 {
+		sendTimeout = 5 * time.Second
+	}
+
 	w := &worker{
 		index:              index,
 		indexStr:           strconv.Itoa(index),
@@ -133,7 +138,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
-		sendTimeoutTicker:  time.NewTicker(opts.SendTimeout),
+		sendTimeoutTicker:  time.NewTicker(sendTimeout),
 		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
 		mapCleanTicker:     time.NewTicker(defaultMapCleanInterval * time.Second),
 		updateConnTicker:   time.NewTicker(time.Duration(30+rand.Intn(50)) * time.Second), // 随机一点
