@@ -10,7 +10,7 @@ require (
 	github.com/juju/ratelimit v1.0.2
 	github.com/klauspost/compress v1.15.15
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
-	github.com/panjf2000/gnet/v2 v2.2.8
+	github.com/panjf2000/gnet/v2 v2.2.9-0.20230518070852-ea970f7064c3
 	github.com/prometheus/client_golang v1.14.0
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
 	go.uber.org/atomic v1.11.0
