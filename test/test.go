@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"go.uber.org/zap/zapcore"
+
 	"github.com/juju/ratelimit"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -48,7 +50,10 @@ func main() {
 
 	var client tglog.Client
 	var err error
-	log, err := zap.NewProduction()
+	cfg := zap.NewProductionConfig()
+	cfg.DisableCaller = true
+	cfg.DisableStacktrace = true
+	log, err := cfg.Build()
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -59,7 +64,7 @@ func main() {
 			tglog.WithNetwork(network),
 			tglog.WithHost(host),
 			tglog.WithPort(port),
-			tglog.WithLogger(log.Sugar()),
+			tglog.WithLogger(log.Sugar().WithOptions(zap.AddStacktrace(zapcore.FatalLevel))),
 			tglog.WithWorkerNum(8),
 			tglog.WithMaxPendingMessages(200000),
 			tglog.WithSocketSendBufferSize(16*1024*1024),
@@ -74,7 +79,7 @@ func main() {
 			tglog.WithNetwork(network),
 			tglog.WithHost(host),
 			tglog.WithPort(port),
-			tglog.WithLogger(log.Sugar()),
+			tglog.WithLogger(log.Sugar().WithOptions(zap.AddStacktrace(zapcore.FatalLevel))),
 			tglog.WithWorkerNum(8),
 			tglog.WithMaxPendingMessages(200000),
 			tglog.WithSocketSendBufferSize(16*1024*1024),
