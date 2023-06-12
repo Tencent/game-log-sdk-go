@@ -16,6 +16,7 @@ type Options struct {
 	Network                 string                // 网络，默认：udp
 	Host                    string                // 服务器主机，可以是IP也可以是域名
 	Port                    int                   // 服务器端口
+	UpdateInterval          time.Duration         // 刷新集群节点列表的间隔，默认1分钟
 	WorkerNum               int                   // 工作线程，默认：8
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
 	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：10
@@ -71,6 +72,10 @@ func (options *Options) ValidateAndSetDefault() error {
 	if options.Port <= 0 || options.Port > 65535 {
 		// 未指定服务器端口
 		return ErrInvalidPort
+	}
+
+	if options.UpdateInterval == 0 {
+		options.UpdateInterval = 1 * time.Minute
 	}
 
 	if options.WorkerNum <= 0 {

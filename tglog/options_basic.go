@@ -40,6 +40,13 @@ func WithPort(p int) Option {
 	}
 }
 
+// WithUpdateInterval sets UpdateInterval
+func WithUpdateInterval(u time.Duration) Option {
+	return func(o *Options) {
+		o.UpdateInterval = u
+	}
+}
+
 // WithWorkerNum sets WorkerNum
 func WithWorkerNum(n int) Option {
 	return func(o *Options) {
