@@ -190,7 +190,7 @@ func (c *client) initAll() error {
 }
 
 func (c *client) initDiscoverer() error {
-	dis, err := discoverer.NewDNS(c.options.Host, c.options.Port, 30*time.Second, c.options.Logger)
+	dis, err := discoverer.NewDNS(c.options.Host, c.options.Port, c.options.UpdateInterval, c.options.Logger)
 	if err != nil {
 		return err
 	}
