@@ -22,7 +22,7 @@ var (
 	host    string
 	port    int
 	version string
-	rate    int
+	rate    float64
 	async   bool
 	sendNum int
 	file    string
@@ -42,7 +42,7 @@ func main() {
 	flag.StringVar(&host, "host", "dev.tglog.com", "server domain name or ip")
 	flag.IntVar(&port, "port", 20001, "server port")
 	flag.StringVar(&version, "version", "v1", "tglog version to use, v1/v3")
-	flag.IntVar(&rate, "rate", 500000, "request send rate")
+	flag.Float64Var(&rate, "rate", 500000, "request send rate")
 	flag.BoolVar(&async, "async", false, "async send or not")
 	flag.IntVar(&sendNum, "send-num", 1000000, "request send number")
 	flag.StringVar(&file, "file", "./sendlogdemo.log", "log file to send")
@@ -107,7 +107,7 @@ func main() {
 		return
 	}
 
-	rl := ratelimit.NewBucketWithRate(float64(rate), 5000)
+	rl := ratelimit.NewBucketWithRate(rate, 5000)
 
 	startTime := time.Now()
 	var success atomic.Uint64
