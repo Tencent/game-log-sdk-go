@@ -104,7 +104,7 @@ type worker struct {
 	dataSemaphore      syncx.Semaphore       // 排队控制信号量
 	pendingBatches     map[string]*batchReq  // 待发送批次
 	unackedBatches     map[string]*batchReq  // 待确认批次
-	sendFailedBatches  chan *batchReq        // 发送成功管道，接收batch发送成功事件
+	sendFailedBatches  chan *batchReq        // 发送失败管道，接收batch发送失败事件
 	retryBatches       chan *batchReq        // 重试管道，接收待重试的batch
 	responseBatches    chan batchRsp         // 响应管道
 	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送

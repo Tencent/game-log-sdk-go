@@ -1,6 +1,6 @@
 module git.woa.com/tglog/v3/sdk-go
 
-go 1.17
+go 1.19
 
 require (
 	git.woa.com/tglog/v3/proto v0.1.0
