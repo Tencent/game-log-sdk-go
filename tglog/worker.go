@@ -37,16 +37,16 @@ const (
 var (
 	errOK               = &errNo{code: 0, strCode: "0", message: "OK"}
 	errSendTimeout      = &errNo{code: 10001, strCode: "10001", message: "message send timeout"}
-	errSendFailed       = &errNo{code: 10002, strCode: "10002", message: "message send failed"}
+	errSendFailed       = &errNo{code: 10002, strCode: "10002", message: "message send failed"} // nolint: unused
 	errProducerClosed   = &errNo{code: 10003, strCode: "10003", message: "producer already been closed"}
 	errSendQueueIsFull  = &errNo{code: 10004, strCode: "10004", message: "producer send queue is full"}
 	errContextExpired   = &errNo{code: 10005, strCode: "10005", message: "message context expired"}
 	errNewConnFailed    = &errNo{code: 10006, strCode: "10006", message: "new conn failed"}
 	errConnWriteFailed  = &errNo{code: 10007, strCode: "10007", message: "conn write failed"}
 	errConnReadFailed   = &errNo{code: 10008, strCode: "10008", message: "conn read failed"}
-	errLogToLong        = &errNo{code: 10009, strCode: "10009", message: "input log is too long"}
+	errLogToLong        = &errNo{code: 10009, strCode: "10009", message: "input log is too long"} // nolint: unused
 	errBadLog           = &errNo{code: 10010, strCode: "10010", message: "input log is invalid"}
-	errServerError      = &errNo{code: 10011, strCode: "10011", message: "server error"}
+	errServerError      = &errNo{code: 10011, strCode: "10011", message: "server error"} // nolint: unused
 	errServerPanic      = &errNo{code: 10012, strCode: "10012", message: "server panic"}
 	errAllWorkerBusy    = &errNo{code: 10013, strCode: "10013", message: "all workers are busy"}
 	errNoMatchReq4Rsp   = &errNo{code: 10014, strCode: "10014", message: "no match unacknowledged request for response"}
@@ -64,7 +64,7 @@ func (e *errNo) Error() string {
 	return e.message
 }
 
-func (e *errNo) getCode() int {
+func (e *errNo) getCode() int { // nolint: unused
 	return e.code
 }
 
@@ -92,31 +92,31 @@ func getErrorCode(err error) string {
 // CLB而不是直连RS，所以是可以接受的。（如果是直连RS，对于UPD来讲，在DNS缓存刷新的这段时间，每次发包都换一个连接也无法避免会
 // 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来检测连接不可用，但是V1协议是没有响应的，也不好实现。）
 type worker struct {
-	client             *client               // 上层client
-	index              int                   // worker id
-	indexStr           string                // worker id 字符串格式
-	options            *Options              // 配置
-	state              atomic.Int32          // 状态
-	log                logger.Logger         // 日志
-	conn               atomic.Value          // 连接
-	cmdChan            chan interface{}      // 命令管道
-	dataChan           chan *sendDataReq     // 数据管道
-	dataSemaphore      syncx.Semaphore       // 排队控制信号量
-	pendingBatches     map[string]*batchReq  // 待发送批次
-	unackedBatches     map[string]*batchReq  // 待确认批次
-	sendFailedBatches  chan *batchReq        // 发送失败管道，接收batch发送失败事件
-	retryBatches       chan *batchReq        // 重试管道，接收待重试的batch
-	responseBatches    chan batchRsp         // 响应管道
-	batchTimeoutTicker *time.Ticker          // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
-	sendTimeoutTicker  *time.Ticker          // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
-	heartbeatTicker    *time.Ticker          // 心跳定时器
-	mapCleanTicker     *time.Ticker          // map清理定时器
-	updateConnTicker   *time.Ticker          // 更新连接定时器，定时从连接池获取连接替换现有连接
-	unackedBatchCount  int                   // map清理计数器
-	metrics            *metrics              // 指标
-	bufferPool         bufferpool.BufferPool // 缓冲池
-	bytePool           bufferpool.BytePool   // 内存池
-	stop               bool                  // 是否停止
+	client             *client                 // 上层client
+	index              int                     // worker id
+	indexStr           string                  // worker id 字符串格式
+	options            *Options                // 配置
+	state              atomic.Int32            // 状态
+	log                logger.Logger           // 日志
+	conn               atomic.Value            // 连接
+	cmdChan            chan interface{}        // 命令管道
+	dataChan           chan *sendDataReq       // 数据管道
+	dataSemaphore      syncx.Semaphore         // 排队控制信号量
+	pendingBatches     map[string]*batchReq    // 待发送批次
+	unackedBatches     map[string]*batchReq    // 待确认批次
+	sendFailedBatches  chan sendFailedBatchReq // 发送失败管道，接收batch发送失败事件
+	retryBatches       chan *batchReq          // 重试管道，接收待重试的batch
+	responseBatches    chan batchRsp           // 响应管道
+	batchTimeoutTicker *time.Ticker            // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
+	sendTimeoutTicker  *time.Ticker            // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
+	heartbeatTicker    *time.Ticker            // 心跳定时器
+	mapCleanTicker     *time.Ticker            // map清理定时器
+	updateConnTicker   *time.Ticker            // 更新连接定时器，定时从连接池获取连接替换现有连接
+	unackedBatchCount  int                     // map清理计数器
+	metrics            *metrics                // 指标
+	bufferPool         bufferpool.BufferPool   // 缓冲池
+	bytePool           bufferpool.BytePool     // 内存池
+	stop               bool                    // 是否停止
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -135,7 +135,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
-		sendFailedBatches:  make(chan *batchReq, opts.MaxPendingMessages),
+		sendFailedBatches:  make(chan sendFailedBatchReq, opts.MaxPendingMessages),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
@@ -394,7 +394,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		}
 	}
 
-	onErr := func(e error) {
+	onErr := func(c gnet.Conn, e error, inCallback bool) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Error("panic:", rec)
@@ -412,17 +412,19 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 			return
 		}
 
+		// 网络错误，换一个连接
+		w.updateConn(c, errConnWriteFailed)
+
 		// 重要：AsyncWrite调用成功，batch就会被放入w.unackedBatches，现在出错了，要把它从w.unackedBatches中删除掉，
 		// 因为这个回调是异步并发的，不能直接修改w.unackedBatches，并发写会panic，这里把batch放入管道，在管道的接收端做
-		// 删除操作
-		if w.options.isV3 {
-			// V3协议才需要把batch从w.unackedBatches中删除，往w.sendFailedBatches写入数据可以使得bathch从w.unackedBatches中删除
-			w.sendFailedBatches <- b
+		// 删除和重传操作
+		if inCallback {
+			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传
+			w.sendFailedBatches <- sendFailedBatchReq{batch: b, retry: retryOnFail}
+			return
 		}
 
-		// 网络错误，换一个连接
-		w.updateConn(errConnWriteFailed)
-		// 放入重试队列
+		// 在同一个协程里，直接放入重试队列或者结束发送
 		if retryOnFail {
 			// w.retryBatches <- b
 			w.backoffRetry(context.Background(), b)
@@ -436,7 +438,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	conn := w.getConn()
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
 		if e != nil {
-			onErr(e)
+			onErr(c, e, true)
 		} else {
 			onOK()
 		}
@@ -444,7 +446,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	})
 
 	if err != nil {
-		onErr(err)
+		onErr(conn, err, false)
 		return
 	}
 
@@ -457,9 +459,17 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	}
 }
 
-func (w *worker) handleSendFailed(b *batchReq) {
-	// 发送失败，从待确认列表中删除
-	delete(w.unackedBatches, b.batchID)
+func (w *worker) handleSendFailed(b sendFailedBatchReq) {
+	// 发送失败，从待确认列表中删除，并重传，重传的时候会放回来，因为只有V3协议会把请求放入w.unackedBatches，
+	// 这里检查一下是否是V3协议，避免删除其他数据
+	if w.options.isV3 {
+		delete(w.unackedBatches, b.batch.batchID)
+	}
+	if b.retry {
+		w.backoffRetry(context.Background(), b.batch)
+	} else {
+		b.batch.done(errConnWriteFailed)
+	}
 }
 
 func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
@@ -471,6 +481,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 
 	// 已经处于关闭状态
 	if w.getState() == stateClosed {
+		w.log.Warn("worker is closed when we are going to retry")
 		batch.done(errSendTimeout)
 		return
 	}
@@ -493,6 +504,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			backoff = maxBackoff
 		}
 
+		// rand在并发的时候会panic，不能共享
 		jitterRand := rand.New(rand.NewSource(time.Now().UnixNano()))
 		jitter := jitterRand.Float64() * float64(backoff) * jitterPercent
 		backoff += time.Duration(jitter)
@@ -501,6 +513,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 		case <-time.After(backoff):
 			// 再次检查是否已经处于关闭状态
 			if w.getState() == stateClosed {
+				w.log.Warn("worker is closed when we are going to retry")
 				batch.done(errSendTimeout)
 				return
 			}
@@ -509,6 +522,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			w.retryBatches <- batch
 		case <-ctx.Done():
 			// 进程退出
+			w.log.Warn("app exit when we are going to retry")
 			batch.done(errSendTimeout)
 		}
 	}()
@@ -538,7 +552,7 @@ func (w *worker) handleBatchTimeout() {
 }
 
 func (w *worker) handleSendTimeout() {
-	// 这里可能会比较低效
+	// 这里可能会比较低效，或许需要一个带排序且能够O(1)查找的数据结构
 	for batchID, batch := range w.unackedBatches {
 		if time.Since(batch.lastSendTime) > w.options.SendTimeout {
 			w.log.Debug("worker[", w.index, "] send timeout, resend it now:", batch.batchID, "batchID:", batchID)
@@ -546,6 +560,7 @@ func (w *worker) handleSendTimeout() {
 			// w.retryBatches <- batch
 			w.backoffRetry(context.Background(), batch)
 			// 因为重传的时候会再次放入w.unackedBatches，这里先删除
+			// 且重传是在另一个协程里，这里不删除的话响应会来时batch会done掉并释放资源，重传的时候可能会异常，所以也要先删除
 			delete(w.unackedBatches, batchID)
 			w.metrics.incTimeout(w.indexStr)
 		}
@@ -599,17 +614,17 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	onErr := func(e error) {
+	onErr := func(c gnet.Conn, e error) {
 		w.metrics.incError(errConnWriteFailed.getStrCode())
 		w.log.Error("send heartbeat failed, err:", e)
-		w.updateConn(errConnWriteFailed)
+		w.updateConn(c, errConnWriteFailed)
 	}
 
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
 	err = conn.AsyncWrite(bytes, func(c gnet.Conn, e error) error {
 		if e != nil {
-			onErr(e)
+			onErr(c, e)
 		}
 		// 发送完，回收
 		w.bufferPool.Put(bb)
@@ -617,7 +632,7 @@ func (w *worker) handleSendHeartbeat() {
 	})
 
 	if err != nil {
-		onErr(err)
+		onErr(conn, err)
 		// 发送失败，回收
 		w.bufferPool.Put(bb)
 	}
@@ -762,10 +777,10 @@ func (w *worker) handleClose(req *closeReq) {
 }
 
 func (w *worker) handleUpdateConn() {
-	w.updateConn(nil)
+	w.updateConn(nil, nil)
 }
 
-func (w *worker) updateConn(err error) {
+func (w *worker) updateConn(old gnet.Conn, err error) {
 	w.log.Debug("worker[", w.index, "] updateConn, err: ", err)
 	newConn, newErr := w.client.getConn()
 	if newErr != nil {
@@ -774,10 +789,18 @@ func (w *worker) updateConn(err error) {
 		return
 	}
 
-	oldConn := w.getConn()
+	oldConn := old
+	if oldConn == nil {
+		oldConn = w.getConn()
+	}
+
 	w.client.putConn(oldConn, err)
-	w.setConn(newConn)
-	w.metrics.incUpdateConn(getErrorCode(err))
+	ok := w.casConn(oldConn, newConn)
+	if ok {
+		w.metrics.incUpdateConn(getErrorCode(err))
+	} else {
+		w.client.putConn(newConn, nil)
+	}
 }
 
 func (w *worker) setConn(conn gnet.Conn) {
@@ -786,6 +809,10 @@ func (w *worker) setConn(conn gnet.Conn) {
 
 func (w *worker) getConn() gnet.Conn {
 	return w.conn.Load().(gnet.Conn)
+}
+
+func (w *worker) casConn(oldConn, newConn gnet.Conn) bool {
+	return w.conn.CompareAndSwap(oldConn, newConn)
 }
 
 func (w *worker) setState(state workerState) {

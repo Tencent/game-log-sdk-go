@@ -155,6 +155,11 @@ type batchRsp struct {
 	seqs    []uint64
 }
 
+type sendFailedBatchReq struct {
+	batch *batchReq
+	retry bool
+}
+
 func buildBatchID(index string) string {
 	return index + ":" + util.SnowFlakeID()
 }
