@@ -19,8 +19,8 @@ type Options struct {
 	UpdateInterval          time.Duration         // 刷新集群节点列表的间隔，默认1分钟
 	WorkerNum               int                   // 工作线程，默认：8
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
-	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：10
-	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：4K
+	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：50
+	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：8K
 	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：409600
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
 	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
@@ -97,11 +97,11 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.BatchingMaxMessages <= 0 {
-		options.BatchingMaxMessages = 10
+		options.BatchingMaxMessages = 50
 	}
 
 	if options.BatchingMaxSize <= 0 {
-		options.BatchingMaxSize = 4096
+		options.BatchingMaxSize = 8 * 1024
 	}
 
 	if options.BatchingMaxSize > maxUDPReqSizeV1 && options.isUDP {
