@@ -308,8 +308,12 @@ func (w *worker) send(ctx context.Context, msg Message) error {
 	}, true)
 
 	// 等待请求处理完成
-	<-doneCh
-	return err
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-doneCh:
+		return err
+	}
 }
 
 func (w *worker) sendAsync(ctx context.Context, msg Message, callback Callback) {
