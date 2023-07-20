@@ -596,24 +596,26 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	req := V3ReqPool.Get().(*v3.Req)
-	defer V3ReqPool.Put(req)
+	body := V3ReqPool.Get().(*v3.Req)
+	defer V3ReqPool.Put(body)
 
 	reqID := buildBatchID(w.indexStr)
-	req, err := BuildV3HeartbeatReq(
+	header, body, err := BuildV3HeartbeatReq(
 		w.options.AppID,
 		w.options.AppName,
 		w.options.AppVer,
 		w.options.Network,
 		reqID,
 		"",
-		req)
+		nil,
+		nil,
+		body)
 	if err != nil {
 		return
 	}
 
 	bb := w.bufferPool.Get()
-	bytes, err := EncodeV3Req(req, w.options.NoFrameHeader, false, false, "", bb, false)
+	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, "", bb, false)
 	if err != nil {
 		return
 	}

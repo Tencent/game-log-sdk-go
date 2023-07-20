@@ -3,7 +3,7 @@ module git.woa.com/tglog/v3/sdk-go
 go 1.19
 
 require (
-	git.woa.com/tglog/v3/proto v0.1.0
+	git.woa.com/tglog/v3/proto v0.1.1-0.20230720081838-c5d94f9ca969
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/gogo/protobuf v1.3.2
@@ -15,7 +15,7 @@ require (
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
 	go.uber.org/atomic v1.11.0
 	go.uber.org/zap v1.24.0
-	google.golang.org/protobuf v1.28.1
+	google.golang.org/protobuf v1.31.0
 )
 
 require (

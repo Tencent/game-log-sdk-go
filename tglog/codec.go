@@ -2,11 +2,14 @@ package tglog
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +30,8 @@ var (
 	sdkVersion = "v0.1.0"
 	sequence   atomic.Uint64
 	protoVer   = fmt.Sprintf("%d.%d.%d", v3.ProtoVer_MAJOR, v3.ProtoVer_MINOR, v3.ProtoVer_PATCH)
+	// V3HeaderPool is the v3 header pool
+	V3HeaderPool *sync.Pool
 	// V3ReqPool is the v3 request pool
 	V3ReqPool *sync.Pool
 	// V3RspPool v3 response pool
@@ -41,11 +46,18 @@ func init() {
 	}
 
 	sequence.Store(rand.New(rand.NewSource(time.Now().UnixNano())).Uint64())
+	V3HeaderPool = &sync.Pool{
+		New: func() interface{} {
+			return &v3.ReqHeader{}
+		},
+	}
+
 	V3ReqPool = &sync.Pool{
 		New: func() interface{} {
 			return &v3.Req{}
 		},
 	}
+
 	V3RspPool = &sync.Pool{
 		New: func() interface{} {
 			return &v3.Rsp{}
@@ -75,43 +87,48 @@ func nextSeq() uint64 {
 }
 
 // BuildV3HeartbeatReq builds a TGLog v3 heartbeat request
-func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, req *v3.Req) (*v3.Req, error) {
+func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, appMetaData []byte,
+	header *v3.ReqHeader, body *v3.Req) (*v3.ReqHeader, *v3.Req, error) {
 	ts := timestamppb.Now()
-	if req == nil {
-		req = &v3.Req{}
+	if body == nil {
+		body = &v3.Req{}
 	} else {
-		req.Reset()
+		body.Reset()
 	}
 
-	req.Header = &v3.ReqHeader{
-		Context: &v3.Context{
-			AppID:    appID,
-			AppName:  appName,
-			AppVer:   appVer,
-			SdkLang:  language,
-			SdkVer:   sdkVersion,
-			SdkOS:    platform,
-			Network:  network,
-			ProtoVer: protoVer,
-			HostIP:   localIP,
-		},
-		ReqID: reqID,
-		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-		Token: token,
-		Sig:   "", // todo sig
+	// header can be nil for a heartbeat request
+	if header != nil {
+		header.Reset()
+
+		header.AppID = appID
+		header.AppName = appName
+		header.AppVer = appVer
+		header.SdkLang = language
+		header.SdkVer = sdkVersion
+		header.SdkOS = platform
+		header.Network = network
+		header.ProtoVer = protoVer
+		header.HostIP = localIP
+		header.Ts = &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}
+		header.Token = token
+		header.Sig = "" // we will sign when encoding
 	}
-	req.Req = &v3.Req_HeartbeatReq{
+
+	body.ReqID = reqID
+	body.AppMetaData = appMetaData
+	body.Req = &v3.Req_HeartbeatReq{
 		HeartbeatReq: &v3.HeartbeatReq{Ping: &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}},
 	}
 
-	return req, nil
+	return header, body, nil
 }
 
 // BuildV3LogReq builds a TGLog v3 log request
 func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, messages []Message,
-	labels map[string]string, annotations map[string]string, req *v3.Req) (*v3.Req, error) {
+	labels map[string]string, annotations map[string]string, appMetaData []byte,
+	header *v3.ReqHeader, body *v3.Req) (*v3.ReqHeader, *v3.Req, error) {
 	if len(messages) == 0 {
-		return nil, errors.New("input message slice is empty")
+		return nil, nil, errors.New("input message slice is empty")
 	}
 
 	pbLogs := v3.Logs{
@@ -134,37 +151,44 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, message
 
 	ts := timestamppb.Now()
 
-	if req == nil {
-		req = &v3.Req{}
+	// header can NOT be nil for a heartbeat request
+	if header == nil {
+		header = &v3.ReqHeader{}
 	} else {
-		req.Reset()
+		header.Reset()
 	}
 
-	req.Header = &v3.ReqHeader{
-		Context: &v3.Context{
-			AppID:    appID,
-			AppName:  appName,
-			AppVer:   appVer,
-			SdkLang:  language,
-			SdkVer:   sdkVersion,
-			SdkOS:    platform,
-			Network:  network,
-			ProtoVer: protoVer,
-			HostIP:   localIP,
-		},
-		ReqID: reqID,
-		Ts:    &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos},
-		Token: token,
-		Sig:   "", // todo sig
+	if body == nil {
+		body = &v3.Req{}
+	} else {
+		body.Reset()
 	}
-	req.Req = logReq
 
-	return req, nil
+	header.AppID = appID
+	header.AppName = appName
+	header.AppVer = appVer
+	header.SdkLang = language
+	header.SdkVer = sdkVersion
+	header.SdkOS = platform
+	header.Network = network
+	header.ProtoVer = protoVer
+	header.HostIP = localIP
+	header.Ts = &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}
+	header.Token = token
+	header.Sig = "" // we will sign when encoding
+
+	body.ReqID = reqID
+	body.AppMetaData = appMetaData
+	body.Req = logReq
+
+	return header, body, nil
 }
 
 // EncodeV3Req encodes a TGLog v3 request into bytes
-func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey string, bb *bytes.Buffer, littleEndian bool) ([]byte, error) {
-	if req == nil {
+func EncodeV3Req(header *v3.ReqHeader, body *v3.Req,
+	noFrameHeader, compress, encrypt, sign bool, encryptKey string,
+	bb *bytes.Buffer, littleEndian bool) ([]byte, error) {
+	if body == nil {
 		return nil, errors.New("input request is nil")
 	}
 
@@ -172,41 +196,64 @@ func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey 
 		bb = &bytes.Buffer{}
 	}
 
-	reqPayload, err := req.Marshal()
+	bodyBytes, err := body.Marshal()
 	if err != nil {
 		return nil, err
 	}
 
-	// 不压缩、不加密、无帧头，直接返回
-	if noFrameHeader && !compress && !encrypt {
-		bb.Grow(len(reqPayload))
-		bb.Write(reqPayload)
+	// 无帧头、不压缩、不加密、不签名，直接返回
+	if noFrameHeader && !compress && !encrypt && !sign {
+		bb.Grow(len(bodyBytes))
+		bb.Write(bodyBytes)
 		return bb.Bytes(), nil
 	}
 
 	var flags uint8
-	var payload = reqPayload
+	var bodyBuf = bodyBytes
 	// 先压缩，大于512字节再压缩
-	if compress && len(payload) > 512 {
+	if compress && len(bodyBuf) > 512 {
 		flags = flags | uint8(v3.Flag_FLAG_COMPRESSED)
-		payload = snappy.Encode(nil, payload)
+		bodyBuf = snappy.Encode(nil, bodyBuf)
 	}
 
 	// 再加密
 	if encrypt {
 		flags = flags | uint8(v3.Flag_FLAG_ENCRYPTED)
 		key := []byte(encryptKey)
-		payload, err = crypto.AesEncrypt(payload, key)
+		bodyBuf, err = crypto.AesEncrypt(bodyBuf, key)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	frameHeaderLen := int(v3.Len_MAGIC + v3.Len_PACKAGE + v3.Len_FLAGS + v3.Len_RESERVE)
-	length := frameHeaderLen + len(payload)
+	var headerBuf []byte
+	if sign && header != nil {
+		header.Sig = Sign(header.Network, header.HostIP, header.Token, header.Ts.Seconds, bodyBuf)
+		headerBuf, err = header.Marshal()
+		if err != nil {
+			return nil, err
+		}
+
+		// 先压缩，大于512字节再压缩
+		if compress && len(headerBuf) > 512 {
+			flags = flags | uint8(v3.Flag_FLAG_COMPRESSED_HEADER)
+			headerBuf = snappy.Encode(nil, headerBuf)
+		}
+
+		// 签名必须加密，否则token会泄漏
+		flags = flags | uint8(v3.Flag_FLAG_ENCRYPTED_HEADER)
+		key := []byte(encryptKey)
+		headerBuf, err = crypto.AesEncrypt(headerBuf, key)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	frameHeaderLen := int(v3.Len_MAGIC + v3.Len_PACKAGE + v3.Len_FLAGS + v3.Len_HEADER + v3.Len_RESERVE)
+	length := frameHeaderLen + len(headerBuf) + len(bodyBuf)
 	bb.Grow(length)
 
-	// write magic
+	// write magic, 2 bytes
 	magicBuf := make([]byte, 2)
 	binary.BigEndian.PutUint16(magicBuf, uint16(v3.Magic_VAL))
 	_, err = bb.Write(magicBuf)
@@ -214,7 +261,7 @@ func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey 
 		return nil, err
 	}
 
-	// write length
+	// write length, 4 bytes
 	var byteOrder binary.ByteOrder = binary.BigEndian
 	if littleEndian {
 		byteOrder = binary.LittleEndian
@@ -227,14 +274,36 @@ func EncodeV3Req(req *v3.Req, noFrameHeader, compress, encrypt bool, encryptKey 
 		return nil, err
 	}
 
-	// write flags&reserved 4 bytes
-	_, err = bb.Write([]byte{flags, 0x00, 0x00, 0x00})
+	// write flags,1 bytes
+	_, err = bb.Write([]byte{flags})
 	if err != nil {
 		return nil, err
 	}
 
-	// write payload
-	_, err = bb.Write(payload)
+	// write header length, 2 bytes
+	headerLengthBuf := make([]byte, 2)
+	byteOrder.PutUint16(headerLengthBuf, uint16(len(headerBuf)))
+	_, err = bb.Write(headerLengthBuf)
+	if err != nil {
+		return nil, err
+	}
+
+	// write reserved, 1 bytes
+	_, err = bb.Write([]byte{0x00})
+	if err != nil {
+		return nil, err
+	}
+
+	// write header
+	if headerBuf != nil {
+		_, err = bb.Write(headerBuf)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// write body
+	_, err = bb.Write(bodyBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -325,4 +394,36 @@ func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int
 	}
 
 	return rsp, nil
+}
+
+// Sign signs a request
+func Sign(uri, method, token string, ts int64, data []byte) string {
+	md5sum := md5.Sum(data)
+	return signData(uri, method, token, ts, md5sum[:])
+}
+
+func signData(uri, method, token string, ts int64, dataList ...[]byte) string {
+	var bb bytes.Buffer
+	dataLen := 0
+	for _, data := range dataList {
+		dataLen += len(data)
+	}
+	bb.Grow(len(uri) + len(method) + len(token) + 8 + dataLen)
+
+	// 按顺序拼接
+	bb.WriteString(uri)
+	bb.WriteString(method)
+
+	bb.WriteString(token)
+
+	var tsBuf [8]byte
+	binary.LittleEndian.PutUint64(tsBuf[:], uint64(ts))
+	bb.Write(tsBuf[:])
+
+	for _, data := range dataList {
+		bb.Write(data)
+	}
+
+	md5sum := md5.Sum(bb.Bytes())
+	return strings.ToLower(hex.EncodeToString(md5sum[:]))
 }

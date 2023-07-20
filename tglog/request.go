@@ -116,30 +116,36 @@ func (b *batchReq) encode() ([]byte, error) {
 	}
 
 	if b.options.isV3 {
-		req := V3ReqPool.Get().(*v3.Req)
-		defer V3ReqPool.Put(req)
+		header := V3HeaderPool.Get().(*v3.ReqHeader)
+		body := V3ReqPool.Get().(*v3.Req)
+		defer V3ReqPool.Put(body)
 
-		req, err := BuildV3LogReq(
+		header, body, err := BuildV3LogReq(
 			b.options.AppID,
 			b.options.AppName,
 			b.options.AppVer,
 			b.options.Network,
 			b.batchID,
-			"",
+			b.options.Token,
 			messages,
 			nil,
-			nil, req)
+			nil,
+			nil,
+			header,
+			body)
 		if err != nil {
 			return nil, err
 		}
 
-		// fmt.Println(req.String())
+		// fmt.Println(body.String())
 
 		return EncodeV3Req(
-			req,
+			header,
+			body,
 			b.options.NoFrameHeader,
 			b.options.Compress,
 			b.options.Encrypt,
+			b.options.Sign,
 			b.options.EncryptKey,
 			b.buffer,
 			false)

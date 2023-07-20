@@ -149,3 +149,20 @@ func WithPayloadBytesToTrip(n int) Option {
 		o.PayloadBytesToTrip = n
 	}
 }
+
+// WithToken sets Token
+func WithToken(t string) Option {
+	return func(o *Options) {
+		if t == "" {
+			return
+		}
+		o.Token = t
+	}
+}
+
+// WithSign sets Sign
+func WithSign(s bool) Option {
+	return func(o *Options) {
+		o.Sign = s
+	}
+}

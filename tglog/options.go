@@ -56,6 +56,8 @@ type Options struct {
 	LenAdjustment           int                   // 计算帧长度时的修正值，可以正可以负V3协议有效，默认：-6
 	FrameBytesToStrip       int                   // 分帧时需要截掉的字节数，只在解码的时候有用，获取帧长度时没用，V3协议有效，默认：0
 	PayloadBytesToTrip      int                   // 从一帧数据获取有效载荷时需要截掉的字节数，V3协议有效，默认：10，截掉V3协议的10个字节帧头
+	Token                   string                // 鉴权令牌，V3协议有效，默认：无
+	Sign                    bool                  // 是否签名，V3协议有效，默认：false
 }
 
 // ValidateAndSetDefault validates an options and set up the default values
