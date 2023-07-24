@@ -18,14 +18,18 @@ import (
 )
 
 var (
-	network string
-	host    string
-	port    int
-	version string
-	rate    float64
-	async   bool
-	sendNum int
-	file    string
+	network   string
+	host      string
+	port      int
+	version   string
+	rate      float64
+	async     bool
+	sendNum   int
+	file      string
+	token     string
+	tokenType string
+	auth      bool
+	sign      bool
 )
 
 func randMsg(msgs []tglog.Message) tglog.Message {
@@ -46,6 +50,10 @@ func main() {
 	flag.BoolVar(&async, "async", false, "async send or not")
 	flag.IntVar(&sendNum, "send-num", 1000000, "request send number")
 	flag.StringVar(&file, "file", "./sendlogdemo.log", "log file to send")
+	flag.StringVar(&token, "token", "AAAAAHeKGDV0ZXN04IVI3EAp3AJZqeIoVECe0lI41Tza205Tue28PKvLY-4", "auth token")
+	flag.StringVar(&tokenType, "token-type", "tglog", "auth token type, bearer/tglog")
+	flag.BoolVar(&auth, "auth", false, "add auth info or not")
+	flag.BoolVar(&sign, "sign", false, "sign the request or not")
 	flag.Parse()
 
 	var client tglog.Client
@@ -73,6 +81,10 @@ func main() {
 			tglog.WithReadBufferSize(16*1024*1024),
 			tglog.WithBatchingMaxMessages(20),
 			tglog.WithBatchingMaxSize(10*1024),
+			tglog.WithAuth(auth),
+			tglog.WithSign(sign),
+			tglog.WithToken(token),
+			tglog.WithTokenType(tokenType),
 		)
 	} else {
 		client, err = tglog.NewV1Client(
