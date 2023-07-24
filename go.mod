@@ -3,7 +3,7 @@ module git.woa.com/tglog/v3/sdk-go
 go 1.19
 
 require (
-	git.woa.com/tglog/v3/proto v0.1.1-0.20230720081838-c5d94f9ca969
+	git.woa.com/tglog/v3/proto v0.1.1-0.20230724033634-4588cb19ea59
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/gogo/protobuf v1.3.2

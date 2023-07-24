@@ -57,7 +57,9 @@ type Options struct {
 	FrameBytesToStrip       int                   // 分帧时需要截掉的字节数，只在解码的时候有用，获取帧长度时没用，V3协议有效，默认：0
 	PayloadBytesToTrip      int                   // 从一帧数据获取有效载荷时需要截掉的字节数，V3协议有效，默认：10，截掉V3协议的10个字节帧头
 	Token                   string                // 鉴权令牌，V3协议有效，默认：无
+	TokenType               string                // 鉴权令牌类型，V3协议有效，默认：无，可选值：bearer/tglog，bearer为JWT，tglog为tglog实现的一种token
 	Sign                    bool                  // 是否签名，V3协议有效，默认：false
+	Auth                    bool                  // 是否携带鉴权参数，
 }
 
 // ValidateAndSetDefault validates an options and set up the default values

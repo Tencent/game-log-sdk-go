@@ -87,7 +87,7 @@ func nextSeq() uint64 {
 }
 
 // BuildV3HeartbeatReq builds a TGLog v3 heartbeat request
-func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, appMetaData []byte,
+func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token, tokenType string, appMetaData []byte,
 	header *v3.ReqHeader, body *v3.Req) (*v3.ReqHeader, *v3.Req, error) {
 	ts := timestamppb.Now()
 	if body == nil {
@@ -111,6 +111,7 @@ func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, a
 		header.HostIP = localIP
 		header.Ts = &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}
 		header.Token = token
+		header.TokenType = tokenType
 		header.Sig = "" // we will sign when encoding
 	}
 
@@ -124,7 +125,7 @@ func BuildV3HeartbeatReq(appID, appName, appVer, network, reqID, token string, a
 }
 
 // BuildV3LogReq builds a TGLog v3 log request
-func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, messages []Message,
+func BuildV3LogReq(appID, appName, appVer, network, reqID, token, tokenType string, messages []Message,
 	labels map[string]string, annotations map[string]string, appMetaData []byte,
 	header *v3.ReqHeader, body *v3.Req) (*v3.ReqHeader, *v3.Req, error) {
 	if len(messages) == 0 {
@@ -175,6 +176,7 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, message
 	header.HostIP = localIP
 	header.Ts = &types.Timestamp{Seconds: ts.Seconds, Nanos: ts.Nanos}
 	header.Token = token
+	header.TokenType = tokenType
 	header.Sig = "" // we will sign when encoding
 
 	body.ReqID = reqID
@@ -186,7 +188,7 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID, token string, message
 
 // EncodeV3Req encodes a TGLog v3 request into bytes
 func EncodeV3Req(header *v3.ReqHeader, body *v3.Req,
-	noFrameHeader, compress, encrypt, sign bool, encryptKey string,
+	noFrameHeader, compress, encrypt, auth, sign bool, encryptKey string,
 	bb *bytes.Buffer, littleEndian bool) ([]byte, error) {
 	if body == nil {
 		return nil, errors.New("input request is nil")
@@ -202,7 +204,7 @@ func EncodeV3Req(header *v3.ReqHeader, body *v3.Req,
 	}
 
 	// 无帧头、不压缩、不加密、不签名，直接返回
-	if noFrameHeader && !compress && !encrypt && !sign {
+	if noFrameHeader && !compress && !encrypt && !auth && !sign {
 		bb.Grow(len(bodyBytes))
 		bb.Write(bodyBytes)
 		return bb.Bytes(), nil
@@ -227,8 +229,11 @@ func EncodeV3Req(header *v3.ReqHeader, body *v3.Req,
 	}
 
 	var headerBuf []byte
-	if sign && header != nil {
-		header.Sig = Sign(header.Network, header.HostIP, header.Token, header.Ts.Seconds, bodyBuf)
+	if (auth || sign) && header != nil {
+		if sign {
+			header.Sig = Sign(header.Network, header.HostIP, header.Token, header.Ts.Seconds, bodyBuf)
+		}
+
 		headerBuf, err = header.Marshal()
 		if err != nil {
 			return nil, err

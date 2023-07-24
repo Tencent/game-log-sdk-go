@@ -606,7 +606,8 @@ func (w *worker) handleSendHeartbeat() {
 		w.options.AppVer,
 		w.options.Network,
 		reqID,
-		"",
+		w.options.Token,
+		w.options.TokenType,
 		nil,
 		nil,
 		body)
@@ -615,7 +616,7 @@ func (w *worker) handleSendHeartbeat() {
 	}
 
 	bb := w.bufferPool.Get()
-	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, "", bb, false)
+	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, false, "", bb, false)
 	if err != nil {
 		return
 	}

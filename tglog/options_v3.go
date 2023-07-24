@@ -160,9 +160,26 @@ func WithToken(t string) Option {
 	}
 }
 
+// WithTokenType sets TokenType
+func WithTokenType(t string) Option {
+	return func(o *Options) {
+		if t == "" {
+			return
+		}
+		o.TokenType = t
+	}
+}
+
 // WithSign sets Sign
 func WithSign(s bool) Option {
 	return func(o *Options) {
 		o.Sign = s
+	}
+}
+
+// WithAuth sets auth
+func WithAuth(a bool) Option {
+	return func(o *Options) {
+		o.Auth = a
 	}
 }

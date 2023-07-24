@@ -116,7 +116,11 @@ func (b *batchReq) encode() ([]byte, error) {
 	}
 
 	if b.options.isV3 {
-		header := V3HeaderPool.Get().(*v3.ReqHeader)
+		var header *v3.ReqHeader
+		if b.options.Auth || b.options.Sign {
+			header = V3HeaderPool.Get().(*v3.ReqHeader)
+		}
+
 		body := V3ReqPool.Get().(*v3.Req)
 		defer V3ReqPool.Put(body)
 
@@ -127,6 +131,7 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.Network,
 			b.batchID,
 			b.options.Token,
+			b.options.TokenType,
 			messages,
 			nil,
 			nil,
@@ -145,6 +150,7 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.NoFrameHeader,
 			b.options.Compress,
 			b.options.Encrypt,
+			b.options.Auth,
 			b.options.Sign,
 			b.options.EncryptKey,
 			b.buffer,
