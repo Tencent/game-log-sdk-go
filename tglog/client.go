@@ -439,7 +439,7 @@ func (c *client) onResponse(frame []byte) {
 		c.options.BytePool,
 		rsp)
 	if err != nil {
-		c.log.Error("decode UDP response failed, err:", err)
+		c.log.Error("decode response failed, err:", err)
 		return
 	}
 

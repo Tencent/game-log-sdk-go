@@ -353,7 +353,7 @@ func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int
 	if !compressed && !encrypted {
 		err = rsp.Unmarshal(payload) // proto.Unmarshal(payload, rsp)
 		if err != nil {
-			return nil, errors.New("unmarshal failed")
+			return nil, errors.New("unmarshal failed: " + err.Error())
 		}
 	} else {
 		buf := payload
@@ -394,7 +394,7 @@ func DecodeV3Rsp(frame []byte, noFrameHeader, verifyMagic bool, bytesToStrip int
 
 		err = rsp.Unmarshal(buf) // proto.Unmarshal(buf, rsp)
 		if err != nil {
-			return nil, errors.New("unmarshal failed")
+			return nil, errors.New("unmarshal failed: " + err.Error())
 		}
 	}
 

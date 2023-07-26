@@ -119,6 +119,7 @@ func (b *batchReq) encode() ([]byte, error) {
 		var header *v3.ReqHeader
 		if b.options.Auth || b.options.Sign {
 			header = V3HeaderPool.Get().(*v3.ReqHeader)
+			defer V3HeaderPool.Put(header)
 		}
 
 		body := V3ReqPool.Get().(*v3.Req)
