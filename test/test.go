@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof" // import pprof handlers
 	"os"
 	"time"
 
@@ -18,18 +20,23 @@ import (
 )
 
 var (
-	network   string
-	host      string
-	port      int
-	version   string
-	rate      float64
-	async     bool
-	sendNum   int
-	file      string
-	token     string
-	tokenType string
-	auth      bool
-	sign      bool
+	network    string
+	host       string
+	port       int
+	version    string
+	rate       float64
+	async      bool
+	sendNum    int
+	file       string
+	token      string
+	tokenType  string
+	auth       bool
+	sign       bool
+	compress   bool
+	encrypt    bool
+	encryptKey string
+	appID      string
+	perf       bool
 )
 
 func randMsg(msgs []tglog.Message) tglog.Message {
@@ -54,6 +61,11 @@ func main() {
 	flag.StringVar(&tokenType, "token-type", "tglog", "auth token type, bearer/tglog")
 	flag.BoolVar(&auth, "auth", false, "add auth info or not")
 	flag.BoolVar(&sign, "sign", false, "sign the request or not")
+	flag.BoolVar(&compress, "compress", false, "compress or not")
+	flag.BoolVar(&encrypt, "encrypt", false, "encrypt or not")
+	flag.StringVar(&encryptKey, "encrypt-key", "0123456789ABCDEF", "encrypt key")
+	flag.StringVar(&appID, "app-id", "test", "app ID")
+	flag.BoolVar(&perf, "perf", false, "enable perf or not")
 	flag.Parse()
 
 	var client tglog.Client
@@ -74,17 +86,23 @@ func main() {
 			tglog.WithPort(port),
 			tglog.WithLogger(log.Sugar().WithOptions(zap.AddStacktrace(zapcore.FatalLevel))),
 			tglog.WithWorkerNum(8),
-			tglog.WithMaxPendingMessages(200000),
-			tglog.WithSocketSendBufferSize(16*1024*1024),
-			tglog.WithSocketRecvBufferSize(16*1024*1024),
-			tglog.WithWriteBufferSize(16*1024*1024),
-			tglog.WithReadBufferSize(16*1024*1024),
+			tglog.WithMaxPendingMessages(100000),
+			tglog.WithSocketSendBufferSize(4*1024*1024),
+			tglog.WithSocketRecvBufferSize(4*1024*1024),
+			tglog.WithWriteBufferSize(4*1024*1024),
+			tglog.WithReadBufferSize(4*1024*1024),
 			tglog.WithBatchingMaxMessages(20),
 			tglog.WithBatchingMaxSize(10*1024),
 			tglog.WithAuth(auth),
 			tglog.WithSign(sign),
 			tglog.WithToken(token),
 			tglog.WithTokenType(tokenType),
+			tglog.WithCompress(compress),
+			tglog.WithEncrypt(encrypt),
+			tglog.WithEncryptKey(encryptKey),
+			tglog.WithAppID(appID),
+			tglog.WithBufferPoolSize(4096),
+			tglog.WithBytePoolSize(4096),
 		)
 	} else {
 		client, err = tglog.NewV1Client(
@@ -119,6 +137,13 @@ func main() {
 		return
 	}
 
+	// perf
+	if perf {
+		go func() {
+			fmt.Println(http.ListenAndServe(":6060", nil))
+		}()
+	}
+
 	rl := ratelimit.NewBucketWithRate(rate, 5000)
 
 	startTime := time.Now()
@@ -138,18 +163,20 @@ func main() {
 			}
 		}
 	} else {
+		callback := func(msg tglog.Message, err error) {
+			if err != nil {
+				failed.Add(1)
+				fmt.Println(err)
+			} else {
+				success.Add(1)
+			}
+		}
 		for {
 			if rl.TakeAvailable(1) > 0 {
 				client.SendAsync(
 					context.Background(),
 					randMsg(msgs),
-					func(msg tglog.Message, err error) {
-						if err != nil {
-							failed.Add(1)
-						} else {
-							success.Add(1)
-						}
-					})
+					callback)
 				sent++
 				if sent >= sendNum {
 					break
@@ -180,5 +207,9 @@ func main() {
 	fmt.Println("success:", success.Load())
 	fmt.Println("failed:", failed.Load())
 	time.Sleep(3 * time.Second)
+	if perf {
+		select {}
+	}
+
 	client.Close()
 }
