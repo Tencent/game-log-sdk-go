@@ -132,21 +132,17 @@ func BuildV3LogReq(appID, appName, appVer, network, reqID, token, tokenType stri
 		return nil, nil, errors.New("input message slice is empty")
 	}
 
-	pbLogs := v3.Logs{
-		Logs: make([]*v3.Log, 0, len(messages)),
-	}
+	pbLogs := make([]*v3.Log, 0, len(messages))
 
 	for _, msg := range messages {
-		pbLogs.Logs = append(pbLogs.Logs, &v3.Log{Name: msg.Name, Content: util.BytesToString(msg.Payload), Seq: nextSeq()})
+		pbLogs = append(pbLogs, &v3.Log{Name: msg.Name, Content: util.BytesToString(msg.Payload), Seq: nextSeq()})
 	}
 
 	logReq := &v3.Req_LogReq{
 		LogReq: &v3.LogReq{
-			Meta: &v3.Meta{
-				Labels:      labels,
-				Annotations: annotations,
-			},
-			Logs: &pbLogs,
+			Labels:      labels,
+			Annotations: annotations,
+			Logs:        pbLogs,
 		},
 	}
 
