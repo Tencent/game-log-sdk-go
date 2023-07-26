@@ -5,6 +5,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
@@ -15,7 +16,26 @@ import (
 	"git.woa.com/tglog/v3/sdk-go/util"
 )
 
+var (
+	reqPool   *sync.Pool
+	batchPool *sync.Pool
+)
+
+func init() {
+	reqPool = &sync.Pool{
+		New: func() interface{} {
+			return &sendDataReq{}
+		},
+	}
+	batchPool = &sync.Pool{
+		New: func() interface{} {
+			return &batchReq{}
+		},
+	}
+}
+
 type sendDataReq struct {
+	pool             *sync.Pool
 	ctx              context.Context
 	msg              Message
 	callback         Callback
@@ -26,6 +46,10 @@ type sendDataReq struct {
 	workerID         string
 }
 
+func (r *sendDataReq) reset(pool *sync.Pool) {
+	*r = sendDataReq{}
+	r.pool = pool
+}
 func (r *sendDataReq) done(err error, errCode string) {
 	if r.semaphore != nil {
 		r.semaphore.Release()
@@ -44,6 +68,9 @@ func (r *sendDataReq) done(err error, errCode string) {
 		}
 		r.metrics.incMessage(errCode)
 	}
+	if r.pool != nil {
+		r.pool.Put(r)
+	}
 }
 
 type closeReq struct {
@@ -52,6 +79,7 @@ type closeReq struct {
 
 type batchCallback func()
 type batchReq struct {
+	pool         *sync.Pool
 	batchID      string
 	options      *Options
 	dataReqs     []*sendDataReq
@@ -66,6 +94,10 @@ type batchReq struct {
 	metrics      *metrics
 }
 
+func (b *batchReq) reset(pool *sync.Pool) {
+	*b = batchReq{}
+	b.pool = pool
+}
 func (b *batchReq) append(r *sendDataReq) {
 	b.dataReqs = append(b.dataReqs, r)
 	b.dataSize += len(r.msg.Payload)
@@ -89,6 +121,9 @@ func (b *batchReq) done(err error) {
 		}
 		b.metrics.observeTime(errorCode, time.Since(b.batchTime).Milliseconds())
 		b.metrics.observeSize(errorCode, b.dataSize)
+	}
+	if b.pool != nil {
+		b.pool.Put(b)
 	}
 }
 

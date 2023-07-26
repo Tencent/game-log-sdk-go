@@ -241,7 +241,9 @@ func (w *worker) start() {
 }
 
 func (w *worker) doSendAsync(ctx context.Context, msg Message, callback Callback, flushImmediately bool) {
-	req := &sendDataReq{
+	req := reqPool.Get().(*sendDataReq)
+	*req = sendDataReq{
+		pool:             reqPool,
 		ctx:              ctx,
 		msg:              msg,
 		callback:         callback,
@@ -353,7 +355,9 @@ func (w *worker) handleSendData(req *sendDataReq) {
 	}
 
 	if needNewBatch {
-		batch = &batchReq{
+		batch = batchPool.Get().(*batchReq)
+		*batch = batchReq{
+			pool:       batchPool,
 			batchID:    buildBatchID(w.indexStr),
 			options:    w.options,
 			dataReqs:   make([]*sendDataReq, 0, w.options.BatchingMaxMessages),
