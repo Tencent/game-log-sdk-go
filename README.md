@@ -224,75 +224,74 @@ failed: 0
 
 ```shell
 [gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -port 20003 -version v3
-{"level":"info","ts":1678102519.2096934,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
-{"level":"info","ts":1678102519.2303233,"caller":"tglog/client.go:337","msg":"client boot"}
+{"level":"info","ts":1690426441.4392853,"msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1690426441.4584458,"msg":"client boot"}
 version: v3
 network: udp
 rate: 500000
 async: false
-send time: 190.505852228
-total time: 190.505852404
+send time: 159.237631829
+total time: 159.237631975
 sent: 1000000
-QPS: 5249.1825704090725
+QPS: 6279.9225760717045
 success: 1000000
 failed: 0
-{"level":"info","ts":1678102712.7758658,"caller":"tglog/client.go:342","msg":"client shutdown"}
+{"level":"info","ts":1690426603.9774907,"msg":"client shutdown"}
 ```
 
 
 #### TCP/V3/同步
 ```shell
 [gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20004 -version v3
-{"level":"info","ts":1678102772.9078648,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
-{"level":"info","ts":1678102772.9297812,"caller":"tglog/client.go:337","msg":"client boot"}
+{"level":"info","ts":1690426637.2871974,"msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1690426637.3054972,"msg":"client boot"}
 version: v3
 network: tcp
 rate: 500000
 async: false
-send time: 229.195823717
-total time: 229.195823956
+send time: 164.919230376
+total time: 164.919230559
 sent: 1000000
-QPS: 4363.0812409216305
+QPS: 6063.574251531868
 success: 1000000
 failed: 0
-{"level":"info","ts":1678103005.4738598,"caller":"tglog/client.go:342","msg":"client shutdown"}
-
+{"level":"info","ts":1690426805.3286662,"msg":"client shutdown"}
 ```
 
 #### UDP/V3/异步
 ```shell
 [gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -port 20003 -version v3 -async
-{"level":"info","ts":1678103119.8860106,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
-{"level":"info","ts":1678103119.9029434,"caller":"tglog/client.go:337","msg":"client boot"}
+{"level":"info","ts":1690426349.148999,"msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1690426349.1617053,"msg":"client boot"}
 version: v3
 network: udp
 rate: 500000
 async: true
-send time: 1.99093862
-total time: 1.996926798
+send time: 1.9908360809999999
+total time: 1.9968420500000001
 sent: 1000000
-QPS: 500769.48288817547
+QPS: 500790.7360524584
 success: 1000000
 failed: 0
-{"level":"info","ts":1678103125.4031549,"caller":"tglog/client.go:342","msg":"client shutdown"}
+{"level":"info","ts":1690426354.661024,"msg":"client shutdown"}
 ```
 
 #### TCP/V3/异步
 ```shell
 [gunli@VM-115-72-centos /data/home/gunli/workspace/go/tglog/sdk-go/test]$ ./test -network tcp -port 20004 -version v3 -async
-{"level":"info","ts":1678103181.8079915,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 9.134.68.216"}
-{"level":"info","ts":1678103181.829597,"caller":"tglog/client.go:337","msg":"client boot"}
+{"level":"info","ts":1690426385.8851142,"msg":"update domain host list dev.tglog.com: 9.134.68.216"}
+{"level":"info","ts":1690426385.9020836,"msg":"client boot"}
 version: v3
 network: tcp
 rate: 500000
 async: true
-send time: 1.99090643
-total time: 3.09498625
+send time: 1.995837593
+total time: 2.003611851
 sent: 1000000
-QPS: 323103.21249407815
+QPS: 499098.6649938716
 success: 1000000
 failed: 0
-{"level":"info","ts":1678103188.3307564,"caller":"tglog/client.go:342","msg":"client shutdown"}
+{"level":"info","ts":1690426391.4043891,"msg":"client shutdown"}
 ```
 
 
@@ -301,7 +300,6 @@ failed: 0
 > - 以上测试数据完整率100%；
 > - V1协议同步UDP与TCP性能相差大是因为gnet网络库对UDP和TCP的处理方式不一样，对于UDP，它立即调用sendTo()发送，对于TCP，它会构造一个异步的任务，将数据放入gnet内部队列，再由调度器调度直到最终写入内核，这个调度有个时间差；
 > - V3协议与V1协议的同步性能相差如此之大，是因为V3协议需要等待响应，收到响应才认为一个请求结束，才能发送一下个请求，而V1版本只管发送，不收响应，且V3需要进行PB编解码；
-> - V3协议异步UDP与TCP性能相差大主要还是gnet网络库对UDP和TCP的处理方式不一样引起的，另外，UDP接收方也无须拆包，当把批次发送的数据量调大时可以提高发送性能。
 
 
 
