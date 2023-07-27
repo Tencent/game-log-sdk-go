@@ -46,10 +46,6 @@ type sendDataReq struct {
 	workerID         string
 }
 
-func (r *sendDataReq) reset(pool *sync.Pool) {
-	*r = sendDataReq{}
-	r.pool = pool
-}
 func (r *sendDataReq) done(err error, errCode string) {
 	if r.semaphore != nil {
 		r.semaphore.Release()
@@ -94,10 +90,6 @@ type batchReq struct {
 	metrics      *metrics
 }
 
-func (b *batchReq) reset(pool *sync.Pool) {
-	*b = batchReq{}
-	b.pool = pool
-}
 func (b *batchReq) append(r *sendDataReq) {
 	b.dataReqs = append(b.dataReqs, r)
 	b.dataSize += len(r.msg.Payload)
