@@ -26,7 +26,7 @@ type stdLogger struct {
 }
 
 func (s stdLogger) Debug(args ...interface{}) {
-	fmt.Println(args...)
+	// fmt.Println(args...)
 }
 
 func (s stdLogger) Info(args ...interface{}) {
@@ -50,7 +50,7 @@ func (s stdLogger) Panic(args ...interface{}) {
 }
 
 func (s stdLogger) Debugf(template string, args ...interface{}) {
-	fmt.Println(fmt.Sprintf(template, args...))
+	// fmt.Println(fmt.Sprintf(template, args...))
 }
 
 func (s stdLogger) Infof(template string, args ...interface{}) {
