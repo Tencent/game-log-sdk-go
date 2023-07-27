@@ -40,14 +40,14 @@ type Options struct {
 	isV3                    bool                  // 是否V3协议，内部使用
 	isUDP                   bool                  // 是否UDP，内部使用
 	isTCP                   bool                  // 是否TCP，内部使用
-	AppID                   string                // 业务ID，暂时没什么用途，V3协议有效，默认：空
+	AppID                   string                // 业务ID，V3协议有效，默认：空，开启鉴权时必填
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
 	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：30000ms
 	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
-	EncryptKey              string                // 加密密钥，V3协议有效，默认：无
+	EncryptKey              string                // 加密密钥，V3协议有效，默认：无，开启鉴权/签名时必填
 	NoFrameHeader           bool                  // 不带协议帧头，V3协议有效，TCP传输时，会强制设置为false，UDP传输时， 不带帧头就无法支持加密和压缩
 	LittleEndian            bool                  // 是否小端字节序，V3协议有效，默认：false
 	MaxFrameLen             int                   // 最大帧长，单位字节，V3协议有效，默认：64K
@@ -58,8 +58,8 @@ type Options struct {
 	PayloadBytesToTrip      int                   // 从一帧数据获取有效载荷时需要截掉的字节数，V3协议有效，默认：10，截掉V3协议的10个字节帧头
 	Token                   string                // 鉴权令牌，V3协议有效，默认：无
 	TokenType               string                // 鉴权令牌类型，V3协议有效，默认：无，可选值：bearer/tglog，bearer为JWT，tglog为tglog实现的一种token
+	Auth                    bool                  // 是否携带鉴权参数，默认：false
 	Sign                    bool                  // 是否签名，V3协议有效，默认：false
-	Auth                    bool                  // 是否携带鉴权参数，
 }
 
 // ValidateAndSetDefault validates an options and set up the default values
