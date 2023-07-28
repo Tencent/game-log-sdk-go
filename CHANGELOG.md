@@ -1,4 +1,4 @@
-## 0.2.7(2023-08-xx)
+## 0.3.0(2023-07-28)
 
 > 说明：如果使用V3协议，此版本及以后的版本需要与v0.9.0及以后版本的服务器配套使用。V1协议不影响。
 
@@ -24,7 +24,7 @@ Bug修复：
 
 开启鉴权时，需要配置AppID；
 
-开启鉴权时，需要配置Token和TokenType，支持bearer/tglog2种类型，bearer为JWT，tglog为tglog实现的一种token；
+开启鉴权时，需要配置Token和TokenType，支持bearer/tglog两种类型，bearer为JWT，tglog为tglog实现的一种token；
 
 - 鉴权
 
