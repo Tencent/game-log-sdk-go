@@ -37,6 +37,9 @@ func pkcs7UnPadding(data []byte) ([]byte, error) {
 	}
 	// 获取填充的个数
 	unPadding := int(data[length-1])
+	if unPadding < 0 || unPadding > length {
+		return nil, errors.New("invalid padding input")
+	}
 	return data[:(length - unPadding)], nil
 }
 
