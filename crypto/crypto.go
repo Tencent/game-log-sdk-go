@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 )
@@ -102,4 +103,35 @@ func DecryptByAes(data string) ([]byte, error) {
 	}
 
 	return AesDecrypt(dataByte, TestKey)
+}
+
+// GenRandomKey generates a random key and returns it as base64 std encoding string
+func GenRandomKey(keyLen int) (string, error) {
+	switch keyLen {
+	case 16, 24, 32:
+		key := make([]byte, keyLen)
+		_, err := rand.Read(key)
+		if err != nil {
+			return "", err
+		}
+
+		return base64.StdEncoding.EncodeToString(key), nil
+	default:
+		return "", errors.New("unsupported length")
+	}
+}
+
+// ParseKey parses a string key into key bytes,
+// if the key is of valid length, use it directly,
+// otherwise try to decode it as a base64 std encoding string
+func ParseKey(key string) ([]byte, error) {
+	keyLen := len(key)
+	switch keyLen {
+	case 0:
+		return nil, errors.New("empty key")
+	case 16, 24, 32:
+		return []byte(key), nil
+	default:
+		return base64.StdEncoding.DecodeString(key)
+	}
 }
