@@ -4,6 +4,8 @@ import (
 	"math"
 	"time"
 
+	"git.woa.com/tglog/v3/sdk-go/crypto"
+
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 
 	"git.woa.com/tglog/v3/sdk-go/logger"
@@ -47,7 +49,7 @@ type Options struct {
 	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
-	EncryptKey              string                // 加密密钥，V3协议有效，默认：无，开启鉴权/签名时必填
+	EncryptKey              string                // 加密密钥，V3协议有效，如果是16/24/32字节的字符串，直接使用，否则会用base64标准编码格式解码后再使用，解码失败将无法使用，默认：无，开启加密/鉴权/签名时必填
 	NoFrameHeader           bool                  // 不带协议帧头，V3协议有效，TCP传输时，会强制设置为false，UDP传输时， 不带帧头就无法支持加密和压缩
 	LittleEndian            bool                  // 是否小端字节序，V3协议有效，默认：false
 	MaxFrameLen             int                   // 最大帧长，单位字节，V3协议有效，默认：64K
@@ -189,8 +191,16 @@ func (options *Options) ValidateAndSetDefault() error {
 		}
 	}
 
-	if options.Encrypt && options.EncryptKey == "" {
+	if options.isV3 && (options.Encrypt || options.Auth || options.Sign) && options.EncryptKey == "" {
 		return ErrInvalidEncryptKey
+	}
+
+	if options.isV3 && options.EncryptKey != "" {
+		key, err := crypto.ParseKey(options.EncryptKey)
+		if err != nil {
+			return err
+		}
+		options.EncryptKey = string(key)
 	}
 
 	if options.MaxFrameLen <= 0 {
