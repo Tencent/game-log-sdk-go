@@ -25,7 +25,7 @@ var (
 	port       int
 	version    string
 	rate       float64
-	async      bool
+	sync       bool
 	sendNum    int
 	file       string
 	token      string
@@ -54,7 +54,7 @@ func main() {
 	flag.IntVar(&port, "port", 20001, "server port")
 	flag.StringVar(&version, "version", "v1", "tglog version to use, v1/v3")
 	flag.Float64Var(&rate, "rate", 500000, "request send rate")
-	flag.BoolVar(&async, "async", false, "async send or not")
+	flag.BoolVar(&sync, "sync", false, "send synchronously or not")
 	flag.IntVar(&sendNum, "send-num", 1000000, "request send number")
 	flag.StringVar(&file, "file", "./sendlogdemo.log", "log file to send")
 	flag.StringVar(&token, "token", "AAAAAHeKGDV0ZXN04IVI3EAp3AJZqeIoVECe0lI41Tza205Tue28PKvLY-4", "auth token")
@@ -150,7 +150,7 @@ func main() {
 	var success atomic.Uint64
 	var failed atomic.Uint64
 	sent := 0
-	if !async {
+	if sync {
 		for i := 0; i < sendNum; i++ {
 			err = client.Send(
 				context.Background(),
@@ -199,7 +199,7 @@ func main() {
 	fmt.Println("version:", version)
 	fmt.Println("network:", network)
 	fmt.Println("rate:", rate)
-	fmt.Println("async:", async)
+	fmt.Println("sync:", sync)
 	fmt.Println("send time:", sendTime)
 	fmt.Println("total time:", duration)
 	fmt.Println("sent:", sendNum)
