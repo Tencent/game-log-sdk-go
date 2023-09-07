@@ -187,7 +187,7 @@ func (options *Options) ValidateAndSetDefault() error {
 		}
 		// V3协议启用了加密或者压缩必须有协议头
 		if options.Encrypt || options.Compress {
-			return ErrV3CENoFrameHeader
+			return ErrV3NoFrameHeader
 		}
 	}
 

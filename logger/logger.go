@@ -1,3 +1,4 @@
+// Package logger provides a logger interface
 package logger
 
 import "fmt"

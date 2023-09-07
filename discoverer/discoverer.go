@@ -1,3 +1,4 @@
+// Package discoverer provides a way to discover endpoints
 package discoverer
 
 import (

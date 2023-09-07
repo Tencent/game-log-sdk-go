@@ -1,3 +1,4 @@
+// Package bytecloser provides a ByteCloser interface
 package bytecloser
 
 import (

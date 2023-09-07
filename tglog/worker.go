@@ -723,15 +723,6 @@ func (w *worker) handleClose(req *closeReq) {
 		w.sendBatch(batch, false) // 失败不再重试
 	}
 
-	/*
-		// 处理掉w.retryBatches中的数据，先起一个协程关闭retryBatches，当没有数据时，下面的for循环消费就不会阻塞
-		go func() {
-			close(w.retryBatches)
-		}()
-		for r := range w.retryBatches {
-			w.handleRetry(r, false) // 失败不再重试
-		}
-	*/
 	// 因为是异步发送，在这之前发送出去失败的在回调中还有可能会写w.retryBatches，这里不能直接关闭它
 	for i := 0; i < len(w.retryBatches); i++ {
 		r := <-w.retryBatches

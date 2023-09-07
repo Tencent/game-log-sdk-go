@@ -1,3 +1,4 @@
+// Package framer provides a simple framing protocol for binary data.
 package framer
 
 import (
@@ -12,9 +13,10 @@ const (
 
 // Framer errors
 var (
-	ErrIncompleteFrame                   = errors.New("incomplete frame")
-	ErrInvalidFrameLen                   = errors.New("invalid frame length")
-	ErrInvalidFrameLenCfg                = errors.New("invalid field length for length field base Framer, expect(1, 2, 3, 4, 8)")
+	ErrIncompleteFrame    = errors.New("incomplete frame")
+	ErrInvalidFrameLen    = errors.New("invalid frame length")
+	ErrInvalidFrameLenCfg = errors.New(
+		"invalid field length for length field base Framer, expect(1, 2, 3, 4, 8)")
 	ErrExceedMaxFrameLen                 = errors.New("exceed max frame length")
 	ErrFrameLenLessThanLenFieldEndOffset = errors.New("frame length less then length field end offset")
 	ErrNoEnoughBytesToTrip               = errors.New("no enough bytes to trip")
@@ -56,7 +58,8 @@ func NewLengthField(cfg LengthFieldCfg) (Framer, error) {
 		return nil, errors.New("invalid bytes to trip for length field base Framer")
 	}
 
-	if cfg.FieldLength != 1 && cfg.FieldLength != 2 && cfg.FieldLength != 3 && cfg.FieldLength != 4 && cfg.FieldLength != 8 {
+	if cfg.FieldLength != 1 && cfg.FieldLength != 2 && cfg.FieldLength != 3 &&
+		cfg.FieldLength != 4 && cfg.FieldLength != 8 {
 		return nil, ErrInvalidFrameLenCfg
 	}
 

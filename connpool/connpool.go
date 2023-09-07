@@ -1,3 +1,4 @@
+// Package connpool provides a connection pool.
 package connpool
 
 import (

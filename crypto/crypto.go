@@ -1,3 +1,4 @@
+// Package crypto 提供加密、解密、签名、验签等功能
 package crypto
 
 import (
