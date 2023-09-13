@@ -1,3 +1,4 @@
+// Package bufferpool provides buffer pool
 package bufferpool
 
 import (
