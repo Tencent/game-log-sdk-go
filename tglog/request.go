@@ -3,6 +3,7 @@ package tglog
 import (
 	"bytes"
 	"context"
+	"github.com/gofrs/uuid"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,7 +14,6 @@ import (
 	"git.woa.com/tglog/v3/sdk-go/syncx"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
-	"git.woa.com/tglog/v3/sdk-go/util"
 )
 
 var (
@@ -201,7 +201,11 @@ type sendFailedBatchReq struct {
 }
 
 func buildBatchID(index string) string {
-	return index + ":" + util.SnowFlakeID()
+	u, err := uuid.NewV4()
+	if err != nil {
+		return index + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return index + ":" + u.String()
 }
 
 func getWorkerIndex(batchID string) int {
