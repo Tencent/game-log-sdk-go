@@ -15,7 +15,10 @@ var (
 func init() {
 	ip, err := GetFirstPrivateIP()
 	if err != nil {
-		log.Fatal(err)
+		ip, err = GetFirstIP()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	id := IPtoUInt(ip)
