@@ -369,7 +369,7 @@ func (w *worker) handleSendData(req *sendDataReq) {
 			bytePool:   w.bytePool,
 			metrics:    w.metrics,
 		}
-		w.log.Debug("worker[", w.index, "] new a batch:", batch.batchID)
+		// w.log.Debug("worker[", w.index, "] new a batch:", batch.batchID)
 		w.pendingBatches[key] = batch
 	}
 
@@ -485,7 +485,7 @@ func (w *worker) handleSendFailed(b sendFailedBatchReq) {
 func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 	if batch.retries >= w.options.MaxRetries {
 		batch.done(errSendTimeout)
-		w.log.Debug("to many reties, batch done:", batch.batchID)
+		// w.log.Debug("to many reties, batch done:", batch.batchID)
 		return
 	}
 
@@ -542,7 +542,7 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 	batch.retries++
 	if batch.retries >= w.options.MaxRetries {
 		batch.done(errSendTimeout)
-		w.log.Debug("to many reties, batch done:", batch.batchID)
+		// w.log.Debug("to many reties, batch done:", batch.batchID)
 		return
 	}
 
@@ -554,7 +554,7 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 func (w *worker) handleBatchTimeout() {
 	for key, batch := range w.pendingBatches {
 		if time.Since(batch.batchTime) > w.options.BatchingMaxPublishDelay {
-			w.log.Debug("worker[", w.index, "] batch timeout, send it now:", batch.batchID, ", key:", key)
+			// w.log.Debug("worker[", w.index, "] batch timeout, send it now:", batch.batchID, ", key:", key)
 			w.sendBatch(batch, true)
 			delete(w.pendingBatches, key)
 		}
@@ -565,7 +565,7 @@ func (w *worker) handleSendTimeout() {
 	// 这里可能会比较低效，或许需要一个带排序且能够O(1)查找的数据结构
 	for batchID, batch := range w.unackedBatches {
 		if time.Since(batch.lastSendTime) > w.options.SendTimeout {
-			w.log.Debug("worker[", w.index, "] send timeout, resend it now:", batch.batchID, "batchID:", batchID)
+			// w.log.Debug("worker[", w.index, "] send timeout, resend it now:", batch.batchID, "batchID:", batchID)
 			// 放入重试队列
 			// w.retryBatches <- batch
 			w.backoffRetry(context.Background(), batch)
@@ -583,7 +583,7 @@ func (w *worker) handleCleanMap() {
 		return
 	}
 
-	w.log.Debug("clean map")
+	// w.log.Debug("clean map")
 	// 创建新的map，将旧数据复制过来
 	newMap := make(map[string]*batchReq)
 	for k, v := range w.unackedBatches {
@@ -663,12 +663,12 @@ func (w *worker) handleRsp(rsp batchRsp) {
 	batchID := rsp.batchID
 	batch, ok := w.unackedBatches[batchID]
 	if !ok {
-		w.log.Debug("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
+		// w.log.Debug("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
 		w.metrics.incError(errNoMatchReq4Rsp.strCode)
 		return
 	}
 
-	w.log.Debug("worker[", w.index, "] batch done:", batchID)
+	// w.log.Debug("worker[", w.index, "] batch done:", batchID)
 	// 释放资源
 	if rsp.code == 0 {
 		batch.done(nil)
@@ -785,7 +785,7 @@ func (w *worker) handleUpdateConn() {
 }
 
 func (w *worker) updateConn(old gnet.Conn, err error) {
-	w.log.Debug("worker[", w.index, "] updateConn, err: ", err)
+	// w.log.Debug("worker[", w.index, "] updateConn, err: ", err)
 	newConn, newErr := w.client.getConn()
 	if newErr != nil {
 		w.log.Error("get new conn error:", newErr)
