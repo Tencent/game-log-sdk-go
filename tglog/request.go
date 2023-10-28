@@ -3,11 +3,12 @@ package tglog
 import (
 	"bytes"
 	"context"
-	"github.com/gofrs/uuid"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofrs/uuid"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
