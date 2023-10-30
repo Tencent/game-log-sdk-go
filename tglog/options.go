@@ -26,10 +26,10 @@ type Options struct {
 	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：204800
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
 	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
-	WriteBufferSize         int                   // 网络层写缓冲大小，默认：16M
-	ReadBufferSize          int                   // 网络层读缓冲大小，默认：16M
-	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：16M
-	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：16M
+	WriteBufferSize         int                   // 网络层写缓冲大小，默认：8M
+	ReadBufferSize          int                   // 网络层读缓冲大小，默认：1M
+	SocketSendBufferSize    int                   // socket发送缓冲大小，默认：8M
+	SocketRecvBufferSize    int                   // socket接收缓冲大小，默认：1M
 	BufferPoolSize          int                   // 发送请求时编码用的缓冲池大小，默认：409600
 	BytePoolSize            int                   // 接收响应时用的缓冲池大小，默认：409600
 	BytePoolWidth           int                   // 接收响应或者压缩请求时用的缓冲内存块大小，默认：与BatchingMaxSize相同
@@ -126,19 +126,19 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.WriteBufferSize <= 0 {
-		options.WriteBufferSize = 16 * 1024 * 1024
+		options.WriteBufferSize = 8 * 1024 * 1024
 	}
 
 	if options.ReadBufferSize <= 0 {
-		options.ReadBufferSize = 16 * 1024 * 1024
+		options.ReadBufferSize = 1 * 1024 * 1024
 	}
 
 	if options.SocketSendBufferSize <= 0 {
-		options.SocketSendBufferSize = 16 * 1024 * 1024
+		options.SocketSendBufferSize = 8 * 1024 * 1024
 	}
 
 	if options.SocketRecvBufferSize <= 0 {
-		options.SocketRecvBufferSize = 16 * 1024 * 1024
+		options.SocketRecvBufferSize = 1 * 1024 * 1024
 	}
 
 	if options.BufferPoolSize <= 0 {
