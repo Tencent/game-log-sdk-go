@@ -22,8 +22,8 @@ type Options struct {
 	WorkerNum               int                   // 工作线程，默认：8
 	BatchingMaxPublishDelay time.Duration         // 间隔多少时间发一次，默认：10ms
 	BatchingMaxMessages     int                   // 每个批次的最大消息条数，默认：50
-	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：8K
-	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：409600
+	BatchingMaxSize         int                   // 每个批次的最大字节数，默认：40K
+	MaxPendingMessages      int                   // 每个工作线程待处理的消息队列长度，默认：204800
 	BlockIfQueueIsFull      bool                  // 队列满则阻塞，默认：false
 	ConnTimeout             time.Duration         // 连接超时，TCP有效，默认：3000ms
 	WriteBufferSize         int                   // 网络层写缓冲大小，默认：16M
@@ -46,7 +46,7 @@ type Options struct {
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
 	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：30000ms
-	MaxRetries              int                   // 重试次数，V3协议有效，默认2，
+	MaxRetries              int                   // 重试次数，V3协议有效，默认1，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
 	EncryptKey              string                // 加密密钥，V3协议有效，如果是16/24/32字节的字符串，直接使用，否则会用base64标准编码格式解码后再使用，解码失败将无法使用，默认：无，开启加密/鉴权/签名时必填
@@ -107,7 +107,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.BatchingMaxSize <= 0 {
-		options.BatchingMaxSize = 8 * 1024
+		options.BatchingMaxSize = 40 * 1024
 	}
 
 	if options.BatchingMaxSize > maxUDPReqSizeV1 && options.isUDP {
@@ -118,7 +118,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.MaxPendingMessages <= 0 {
-		options.MaxPendingMessages = 409600
+		options.MaxPendingMessages = 204800
 	}
 
 	if options.ConnTimeout <= 0 {
@@ -177,7 +177,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.MaxRetries <= 0 {
-		options.MaxRetries = 2
+		options.MaxRetries = 1
 	}
 
 	if options.NoFrameHeader && options.isV3 {
