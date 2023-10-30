@@ -30,7 +30,9 @@ func init() {
 	}
 	batchPool = &sync.Pool{
 		New: func() interface{} {
-			return &batchReq{}
+			return &batchReq{
+				dataReqs: make([]*sendDataReq, 0, 50),
+			}
 		},
 	}
 }
@@ -98,9 +100,12 @@ func (b *batchReq) append(r *sendDataReq) {
 
 func (b *batchReq) done(err error) {
 	errorCode := getErrorCode(err)
-	for _, req := range b.dataReqs {
+	for i, req := range b.dataReqs {
 		req.done(err, errorCode)
+		b.dataReqs[i] = nil
 	}
+	b.dataReqs = b.dataReqs[:0]
+
 	if b.callback != nil {
 		b.callback()
 	}

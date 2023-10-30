@@ -358,11 +358,15 @@ func (w *worker) handleSendData(req *sendDataReq) {
 
 	if needNewBatch {
 		batch = batchPool.Get().(*batchReq)
+		dataReqs := batch.dataReqs
+		if dataReqs == nil {
+			dataReqs = make([]*sendDataReq, 0, w.options.BatchingMaxMessages)
+		}
 		*batch = batchReq{
 			pool:       batchPool,
 			batchID:    buildBatchID(w.indexStr),
 			options:    w.options,
-			dataReqs:   make([]*sendDataReq, 0, w.options.BatchingMaxMessages),
+			dataReqs:   dataReqs,
 			batchTime:  time.Now(),
 			retries:    0,
 			bufferPool: w.bufferPool,
