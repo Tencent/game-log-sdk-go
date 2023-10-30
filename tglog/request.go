@@ -52,23 +52,27 @@ type sendDataReq struct {
 func (r *sendDataReq) done(err error, errCode string) {
 	if r.semaphore != nil {
 		r.semaphore.Release()
+		if r.metrics != nil {
+			r.metrics.decPending(r.workerID)
+		}
+		r.semaphore = nil
 	}
 
 	if r.callback != nil {
 		r.callback(r.msg, err)
+		r.callback = nil
 	}
 
 	if r.metrics != nil {
-		if r.semaphore != nil {
-			r.metrics.decPending(r.workerID)
-		}
 		if errCode == "" {
 			errCode = getErrorCode(err)
 		}
 		r.metrics.incMessage(errCode)
+		r.metrics = nil
 	}
 	if r.pool != nil {
 		r.pool.Put(r)
+		r.pool = nil
 	}
 }
 
@@ -108,6 +112,7 @@ func (b *batchReq) done(err error) {
 
 	if b.callback != nil {
 		b.callback()
+		b.callback = nil
 	}
 	if b.buffer != nil && b.bufferPool != nil {
 		b.bufferPool.Put(b.buffer)
@@ -119,9 +124,11 @@ func (b *batchReq) done(err error) {
 		}
 		b.metrics.observeTime(errorCode, time.Since(b.batchTime).Milliseconds())
 		b.metrics.observeSize(errorCode, b.dataSize)
+		b.metrics = nil
 	}
 	if b.pool != nil {
 		b.pool.Put(b)
+		b.pool = nil
 	}
 }
 
