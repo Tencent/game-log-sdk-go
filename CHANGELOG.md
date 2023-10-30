@@ -1,10 +1,14 @@
-## 0.3.3(2023-11-xx)
+## 0.3.3(2023-10-30)
 
 特性：
 
 改进：
-- 修改部署静态代码检查告警；
-- 升级依赖库；
+- 使用uuid作为请求ID，不依赖于snowflake ID；
+- 初始化时只获取IP，不强制获取私有IP；
+- 获取worker时，如果其队列满，直接返回错误，不再尝试其他worker，fail fast；
+- 缓存`batchReq.data`；
+- 修改MaxRetries、BatchingMaxPublishDelay、MaxPendingMessages默认值为1、20ms、204800；
+- 升级依赖包；
 
 Bug修复：
 
