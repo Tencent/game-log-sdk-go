@@ -94,31 +94,31 @@ func getErrorCode(err error) string {
 // CLB而不是直连RS，所以是可以接受的。（如果是直连RS，对于UPD来讲，在DNS缓存刷新的这段时间，每次发包都换一个连接也无法避免会
 // 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来检测连接不可用，但是V1协议是没有响应的，也不好实现。）
 type worker struct {
-	client             *client                 // 上层client
-	index              int                     // worker id
-	indexStr           string                  // worker id 字符串格式
-	options            *Options                // 配置
-	state              atomic.Int32            // 状态
-	log                logger.Logger           // 日志
-	conn               atomic.Value            // 连接
-	cmdChan            chan interface{}        // 命令管道
-	dataChan           chan *sendDataReq       // 数据管道
-	dataSemaphore      syncx.Semaphore         // 排队控制信号量
-	pendingBatches     map[string]*batchReq    // 待发送批次
-	unackedBatches     map[string]*batchReq    // 待确认批次
-	sendFailedBatches  chan sendFailedBatchReq // 发送失败管道，接收batch发送失败事件
-	retryBatches       chan *batchReq          // 重试管道，接收待重试的batch
-	responseBatches    chan batchRsp           // 响应管道
-	batchTimeoutTicker *time.Ticker            // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
-	sendTimeoutTicker  *time.Ticker            // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
-	heartbeatTicker    *time.Ticker            // 心跳定时器
-	mapCleanTicker     *time.Ticker            // map清理定时器
-	updateConnTicker   *time.Ticker            // 更新连接定时器，定时从连接池获取连接替换现有连接
-	unackedBatchCount  int                     // map清理计数器
-	metrics            *metrics                // 指标
-	bufferPool         bufferpool.BufferPool   // 缓冲池
-	bytePool           bufferpool.BytePool     // 内存池
-	stop               bool                    // 是否停止
+	client             *client                  // 上层client
+	index              int                      // worker id
+	indexStr           string                   // worker id 字符串格式
+	options            *Options                 // 配置
+	state              atomic.Int32             // 状态
+	log                logger.Logger            // 日志
+	conn               atomic.Value             // 连接
+	cmdChan            chan interface{}         // 命令管道
+	dataChan           chan *sendDataReq        // 数据管道
+	dataSemaphore      syncx.Semaphore          // 排队控制信号量
+	pendingBatches     map[string]*batchReq     // 待发送批次
+	unackedBatches     map[string]*batchReq     // 待确认批次
+	sendFailedBatches  chan *sendFailedBatchReq // 发送失败管道，接收batch发送失败事件
+	retryBatches       chan *batchReq           // 重试管道，接收待重试的batch
+	responseBatches    chan *batchRsp           // 响应管道
+	batchTimeoutTicker *time.Ticker             // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
+	sendTimeoutTicker  *time.Ticker             // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
+	heartbeatTicker    *time.Ticker             // 心跳定时器
+	mapCleanTicker     *time.Ticker             // map清理定时器
+	updateConnTicker   *time.Ticker             // 更新连接定时器，定时从连接池获取连接替换现有连接
+	unackedBatchCount  int                      // map清理计数器
+	metrics            *metrics                 // 指标
+	bufferPool         bufferpool.BufferPool    // 缓冲池
+	bytePool           bufferpool.BytePool      // 内存池
+	stop               bool                     // 是否停止
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -137,9 +137,9 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
-		sendFailedBatches:  make(chan sendFailedBatchReq, opts.MaxPendingMessages),
+		sendFailedBatches:  make(chan *sendFailedBatchReq, opts.MaxPendingMessages),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
-		responseBatches:    make(chan batchRsp, opts.MaxPendingMessages),
+		responseBatches:    make(chan *batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
 		sendTimeoutTicker:  time.NewTicker(sendTimeout),
 		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
@@ -434,7 +434,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		// 删除和重传操作
 		if inCallback {
 			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传
-			w.sendFailedBatches <- sendFailedBatchReq{batch: b, retry: retryOnFail}
+			w.sendFailedBatches <- &sendFailedBatchReq{batch: b, retry: retryOnFail}
 			return
 		}
 
@@ -473,7 +473,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	}
 }
 
-func (w *worker) handleSendFailed(b sendFailedBatchReq) {
+func (w *worker) handleSendFailed(b *sendFailedBatchReq) {
 	// 发送失败，从待确认列表中删除，并重传，重传的时候会放回来，因为只有V3协议会把请求放入w.unackedBatches，
 	// 这里检查一下是否是V3协议，避免删除其他数据
 	if w.options.isV3 {
@@ -655,7 +655,7 @@ func (w *worker) handleSendHeartbeat() {
 	}
 }
 
-func (w *worker) onRsp(rsp batchRsp) {
+func (w *worker) onRsp(rsp *batchRsp) {
 	// 已经处于关闭状态
 	if w.getState() == stateClosed {
 		return
@@ -663,7 +663,7 @@ func (w *worker) onRsp(rsp batchRsp) {
 	w.responseBatches <- rsp
 }
 
-func (w *worker) handleRsp(rsp batchRsp) {
+func (w *worker) handleRsp(rsp *batchRsp) {
 	batchID := rsp.batchID
 	batch, ok := w.unackedBatches[batchID]
 	if !ok {

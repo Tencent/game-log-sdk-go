@@ -449,7 +449,7 @@ func (c *client) onResponse(frame []byte) {
 			c.log.Debugf("invalid worker index from response, index=%d", index)
 			return
 		}
-		c.workers[index].onRsp(batchRsp{
+		c.workers[index].onRsp(&batchRsp{
 			batchID: batchID,
 			code:    int(rsp.Header.Code),
 			msg:     rsp.Header.Msg,
