@@ -47,9 +47,9 @@ func ExampleClient_SendAsync() {
 			tglog.Message{Name: "test", Payload: []byte("test|a|b|c")},
 			func(msg tglog.Message, err error) {
 				if err != nil {
-					success.Add(1)
-				} else {
 					failed.Add(1)
+				} else {
+					success.Add(1)
 				}
 			})
 	}
