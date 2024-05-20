@@ -97,12 +97,6 @@ func NewV1Client(opts ...Option) (Client, error) {
 		return nil, err
 	}
 
-	err = cli.netClient.Start()
-	if err != nil {
-		cli.Close()
-		return nil, err
-	}
-
 	return cli, nil
 }
 
@@ -139,12 +133,6 @@ func NewV3Client(opts ...Option) (Client, error) {
 	}
 
 	err = cli.initAll()
-	if err != nil {
-		cli.Close()
-		return nil, err
-	}
-
-	err = cli.netClient.Start()
 	if err != nil {
 		cli.Close()
 		return nil, err
@@ -207,6 +195,11 @@ func (c *client) initNetClient() error {
 		gnet.WithReadBufferCap(c.options.ReadBufferSize),
 		gnet.WithSocketSendBuffer(c.options.SocketSendBufferSize),
 		gnet.WithSocketRecvBuffer(c.options.SocketRecvBufferSize))
+	if err != nil {
+		return err
+	}
+
+	err = netClient.Start()
 	if err != nil {
 		return err
 	}
