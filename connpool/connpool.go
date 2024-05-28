@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -165,7 +166,7 @@ func (p *connPool) Put(conn gnet.Conn, err error) {
 			return
 		case <-time.After(1 * time.Second):
 			// connChan is full, close the new conn
-			newConn.Close()
+			_ = newConn.Close()
 			return
 		}
 	}
@@ -179,6 +180,13 @@ func (p *connPool) Put(conn gnet.Conn, err error) {
 }
 
 func (p *connPool) UpdateEndpoints(all, add, del []string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			p.log.Errorf("panic when update endpoints:", rec)
+			p.log.Error(string(debug.Stack()))
+		}
+	}()
+
 	if len(all) == 0 {
 		return
 	}
@@ -210,7 +218,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 				continue
 			case <-time.After(1 * time.Second):
 				// connChan is full, close the new conn
-				conn.Close()
+				_ = conn.Close()
 				continue
 			}
 		}
@@ -235,7 +243,14 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 			break
 		}
 
-		addr := conn.RemoteAddr().String()
+		// fix: when conn is closed by peer, remote add may be nil
+		remoteAddr := conn.RemoteAddr()
+		if remoteAddr == nil {
+			CloseConn(conn, 0)
+			continue
+		}
+
+		addr := remoteAddr.String()
 		_, ok = delEndpoints[addr]
 		if ok {
 			p.log.Info("endpoint deleted, close its connection, addr:", addr)
@@ -253,7 +268,7 @@ func (p *connPool) NumPooled() int {
 // CloseConn closes a connection after a duration of time
 func CloseConn(conn gnet.Conn, after time.Duration) {
 	if after <= 0 {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
@@ -261,10 +276,10 @@ func CloseConn(conn gnet.Conn, after time.Duration) {
 	go func() {
 		select {
 		case <-time.After(after):
-			conn.Close()
+			_ = conn.Close()
 			return
 		case <-ctx.Done():
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 	}()
