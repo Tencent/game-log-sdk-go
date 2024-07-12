@@ -7,16 +7,17 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-
-	"git.woa.com/tglog/v3/sdk-go/framer"
+	"time"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
-	"git.woa.com/tglog/v3/sdk-go/connpool"
 	"github.com/panjf2000/gnet/v2"
 
+	"git.woa.com/tglog/v3/sdk-go/connpool"
 	"git.woa.com/tglog/v3/sdk-go/discoverer"
+	"git.woa.com/tglog/v3/sdk-go/framer"
 	"git.woa.com/tglog/v3/sdk-go/logger"
+	"git.woa.com/tglog/v3/sdk-go/udp"
 )
 
 const (
@@ -143,7 +144,12 @@ func NewV3Client(opts ...Option) (Client, error) {
 
 func (c *client) initAll() error {
 	// 以下初始化的顺序不能乱
-	err := c.initDiscoverer()
+	err := c.initMetrics()
+	if err != nil {
+		return err
+	}
+
+	err = c.initDiscoverer()
 	if err != nil {
 		return err
 	}
@@ -159,11 +165,6 @@ func (c *client) initAll() error {
 	}
 
 	err = c.initFramer()
-	if err != nil {
-		return err
-	}
-
-	err = c.initMetrics()
 	if err != nil {
 		return err
 	}
@@ -221,10 +222,8 @@ func (c *client) initConns() error {
 		endpoints[i] = epList[i].Addr
 	}
 
-	// maximum connection number per endpoint is 3
-	connsPerEndpoint := c.options.WorkerNum/epLen + 1
-	connsPerEndpoint = int(math.Min(3, float64(connsPerEndpoint)))
-
+	// minimum connection number per endpoint is 1
+	connsPerEndpoint := int(math.Ceil(float64(c.options.WorkerNum) / float64(epLen)))
 	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 512, c, c.log)
 	if err != nil {
 		return err
@@ -278,6 +277,15 @@ func (c *client) initWorkers() error {
 }
 
 func (c *client) Dial(addr string) (gnet.Conn, error) {
+	if c.options.isTCP {
+		return c.netClient.Dial(c.options.Network, addr)
+	}
+
+	err := udp.Reachable(addr, []byte("__probe__|_|_|_\n"), 100*time.Millisecond, 100*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+
 	return c.netClient.Dial(c.options.Network, addr)
 }
 
@@ -326,6 +334,10 @@ func (c *client) Close() {
 		if c.netClient != nil {
 			_ = c.netClient.Stop()
 		}
+
+		if c.connPool != nil {
+			c.connPool.Close()
+		}
 	})
 }
 
@@ -356,10 +368,22 @@ func (c *client) OnOpen(conn gnet.Conn) ([]byte, gnet.Action) {
 }
 
 func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
-	c.log.Warn("connection closed: ", conn.RemoteAddr(), ", err:", err)
 	if err != nil {
+		c.log.Warn("connection closed: ", conn.RemoteAddr(), ", err:", err)
 		c.metrics.incError(errConnClosedByPeer.strCode)
 	}
+
+	// delete this conn from conn pool
+	if c.connPool != nil {
+		c.connPool.OnConnClosed(conn, err)
+	}
+
+	if err != nil {
+		for _, w := range c.workers {
+			w.onConnClosed(conn, err)
+		}
+	}
+
 	return gnet.Close
 }
 
@@ -384,7 +408,7 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		buf, _ := conn.Peek(total)
 
 		length, payloadOffset, payloadOffsetEnd, err := c.framer.ReadFrame(buf)
-		if err == framer.ErrIncompleteFrame {
+		if errors.Is(err, framer.ErrIncompleteFrame) {
 			break
 		}
 
