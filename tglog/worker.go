@@ -107,6 +107,7 @@ type worker struct {
 	pendingBatches     map[string]*batchReq     // 待发送批次
 	unackedBatches     map[string]*batchReq     // 待确认批次
 	sendFailedBatches  chan *sendFailedBatchReq // 发送失败管道，接收batch发送失败事件
+	updateConnChan     chan error               // 更新连接管道，接收更新连接通知
 	retryBatches       chan *batchReq           // 重试管道，接收待重试的batch
 	responseBatches    chan *batchRsp           // 响应管道
 	batchTimeoutTicker *time.Ticker             // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
@@ -138,6 +139,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
 		sendFailedBatches:  make(chan *sendFailedBatchReq, opts.MaxPendingMessages),
+		updateConnChan:     make(chan error, 64),
 		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan *batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
@@ -165,6 +167,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	if err != nil {
 		return nil, err
 	}
+	w.log.Info("use conn: ", conn.RemoteAddr().String())
 	w.setConn(conn)
 
 	// 启动处理协程
@@ -183,7 +186,7 @@ func (w *worker) start() {
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
-				w.log.Errorf("panic:", rec)
+				w.log.Error("panic:", rec)
 				w.log.Error(string(debug.Stack()))
 				w.metrics.incError(errServerPanic.getStrCode())
 			}
@@ -219,6 +222,12 @@ func (w *worker) start() {
 			case <-w.updateConnTicker.C:
 				// 更新连接
 				w.handleUpdateConn()
+			case e, ok := <-w.updateConnChan:
+				if !ok {
+					continue
+				}
+				// 更新连接
+				w.updateConn(nil, e)
 			case batch, ok := <-w.sendFailedBatches:
 				// 处理发送成功的批次
 				if !ok {
@@ -418,7 +427,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		}()
 
 		w.metrics.incError(errConnWriteFailed.getStrCode())
-		w.log.Error("send batch failed, err:", e)
+		w.log.Error("send batch failed, err: ", e, ", inCallback: ", inCallback, ", logNum:", len(b.dataReqs))
 
 		// 已经处于关闭状态
 		if w.getState() == stateClosed {
@@ -426,19 +435,20 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 			return
 		}
 
-		// 网络错误，换一个连接
-		w.updateConn(c, errConnWriteFailed)
-
 		// 重要：AsyncWrite调用成功，batch就会被放入w.unackedBatches，现在出错了，要把它从w.unackedBatches中删除掉，
 		// 因为这个回调是异步并发的，不能直接修改w.unackedBatches，并发写会panic，这里把batch放入管道，在管道的接收端做
 		// 删除和重传操作
 		if inCallback {
+			// 不能在gnet的异步回调中触发连接更新，更新连接有可能创建新连接，创建新连接时调用dial函数因为和回调是同一个协程，会死锁阻塞
+			w.updateConnAsync(errConnWriteFailed)
 			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传
 			w.sendFailedBatches <- &sendFailedBatchReq{batch: b, retry: retryOnFail}
 			return
 		}
 
 		// 在同一个协程里，直接放入重试队列或者结束发送
+		// 网络错误，换一个连接
+		w.updateConn(c, errConnWriteFailed)
 		if retryOnFail {
 			// w.retryBatches <- b
 			w.backoffRetry(context.Background(), b)
@@ -450,7 +460,14 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
+	if b.retries > 0 {
+		w.log.Warn("retry batch to conn:", conn.RemoteAddr(), ", workerID:", w.index, ", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
+	}
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
+		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
+		if w.options.isUDP {
+			return nil
+		}
 		if e != nil {
 			onErr(c, e, true)
 		} else {
@@ -462,6 +479,9 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	if err != nil {
 		onErr(conn, err, false)
 		return
+	} else if w.options.isUDP {
+		// 如果是UDP，成功失败都要在conn.AsyncWrite()返回后处理，而不是在它的回调中处理
+		onOK()
 	}
 
 	// V3协议才需要等响应确认
@@ -509,7 +529,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			}
 		}()
 
-		minBackoff := 100 * time.Millisecond
+		minBackoff := 500 * time.Millisecond
 		maxBackoff := 10 * time.Second
 		jitterPercent := 0.2
 
@@ -533,6 +553,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			}
 
 			// 放入重试队列
+			w.log.Warn("put to retry...")
 			w.retryBatches <- batch
 		case <-ctx.Done():
 			// 进程退出
@@ -552,6 +573,7 @@ func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 
 	// 重试
 	w.metrics.incRetry(w.indexStr)
+	w.log.Info("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID)
 	w.sendBatch(batch, retryOnFail)
 }
 
@@ -631,17 +653,26 @@ func (w *worker) handleSendHeartbeat() {
 		return
 	}
 
-	onErr := func(c gnet.Conn, e error) {
+	onErr := func(c gnet.Conn, e error, inCallback bool) {
 		w.metrics.incError(errConnWriteFailed.getStrCode())
 		w.log.Error("send heartbeat failed, err:", e)
-		w.updateConn(c, errConnWriteFailed)
+		if inCallback {
+			// 不能在gnet的异步回调中触发连接更新，更新连接有可能创建新连接，创建新连接时调用dial函数因为和回调是同一个协程，会死锁阻塞
+			w.updateConnAsync(errConnWriteFailed)
+		} else {
+			w.updateConn(c, errConnWriteFailed)
+		}
 	}
 
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
 	err = conn.AsyncWrite(bytes, func(c gnet.Conn, e error) error {
+		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
+		if w.options.isUDP {
+			return nil
+		}
 		if e != nil {
-			onErr(c, e)
+			onErr(c, e, true)
 		}
 		// 发送完，回收
 		w.bufferPool.Put(bb)
@@ -649,10 +680,15 @@ func (w *worker) handleSendHeartbeat() {
 	})
 
 	if err != nil {
-		onErr(conn, err)
+		onErr(conn, err, false)
 		// 发送失败，回收
 		w.bufferPool.Put(bb)
+	} else if w.options.isUDP {
+		// 如果是UDP，成功失败都要在conn.AsyncWrite()返回后处理，而不是在它的回调中处理
+		// 发送成功，回收
+		w.bufferPool.Put(bb)
 	}
+
 }
 
 func (w *worker) onRsp(rsp *batchRsp) {
@@ -757,6 +793,8 @@ func (w *worker) handleClose(req *closeReq) {
 		close(w.retryBatches)
 		// 关闭发送失败管道
 		close(w.sendFailedBatches)
+		// 关闭更新连接管道
+		close(w.updateConnChan)
 		// 关闭响应接收管道
 		close(w.responseBatches)
 		// 通知调用者close操作完成
@@ -788,6 +826,19 @@ func (w *worker) handleUpdateConn() {
 	w.updateConn(nil, nil)
 }
 
+func (w *worker) updateConnAsync(err error) {
+	// 已经处于关闭状态
+	if w.getState() == stateClosed {
+		return
+	}
+
+	select {
+	case w.updateConnChan <- err:
+	default:
+	}
+
+}
+
 func (w *worker) updateConn(old gnet.Conn, err error) {
 	// w.log.Debug("worker[", w.index, "] updateConn, err: ", err)
 	newConn, newErr := w.client.getConn()
@@ -817,6 +868,15 @@ func (w *worker) setConn(conn gnet.Conn) {
 
 func (w *worker) getConn() gnet.Conn {
 	return w.conn.Load().(gnet.Conn)
+}
+
+func (w *worker) onConnClosed(conn gnet.Conn, err error) {
+	oldConn := w.conn.Load().(gnet.Conn)
+	connAddr := conn.RemoteAddr()
+	oldConnAddr := oldConn.RemoteAddr()
+	if oldConn == conn || (connAddr != nil && oldConnAddr != nil && connAddr.String() == oldConnAddr.String()) {
+		w.updateConnAsync(err)
+	}
 }
 
 func (w *worker) casConn(oldConn, newConn gnet.Conn) bool {

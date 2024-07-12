@@ -118,6 +118,7 @@ func main() {
 			tglog.WithReadBufferSize(16*1024*1024),
 			tglog.WithBatchingMaxMessages(20),
 			tglog.WithBatchingMaxSize(10*1024),
+			tglog.WithMaxRetries(3),
 		)
 	}
 	if err != nil {
@@ -144,7 +145,7 @@ func main() {
 		}()
 	}
 
-	rl := ratelimit.NewBucketWithRate(rate, 5000)
+	rl := ratelimit.NewBucketWithRate(rate, int64(rate)+1)
 
 	startTime := time.Now()
 	var success atomic.Uint64
@@ -166,7 +167,7 @@ func main() {
 		callback := func(msg tglog.Message, err error) {
 			if err != nil {
 				failed.Add(1)
-				fmt.Println(err)
+				// fmt.Println(err)
 			} else {
 				success.Add(1)
 			}
