@@ -5,13 +5,23 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/rand"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"git.woa.com/tglog/v3/sdk-go/logger"
 	"github.com/panjf2000/gnet/v2"
-	"go.uber.org/atomic"
+
+	"git.woa.com/tglog/v3/sdk-go/logger"
+)
+
+// error variables
+var (
+	ErrInitEndpointEmpty   = errors.New("init endpoints is empty")
+	ErrDialerIsNil         = errors.New("dialer is nil")
+	ErrLoggerIsNil         = errors.New("logger is nil")
+	ErrNoAvailableEndpoint = errors.New("no available server endpoint")
 )
 
 // Dialer is the interface of a dialer that return a NetConn
@@ -28,13 +38,15 @@ type EndpointRestrictedConnPool interface {
 	Put(conn gnet.Conn, err error)
 	UpdateEndpoints(all, add, del []string)
 	NumPooled() int
+	OnConnClosed(conn gnet.Conn, err error)
+	Close()
 }
 
 // NewConnPool news a EndpointRestrictedConnPool
 func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 	dialer Dialer, log logger.Logger) (EndpointRestrictedConnPool, error) {
 	if len(initEndpoints) == 0 {
-		return nil, errors.New("init endpoints is empty")
+		return nil, ErrInitEndpointEmpty
 	}
 
 	if connsPerEndpoint <= 0 {
@@ -42,16 +54,16 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 	}
 
 	if dialer == nil {
-		return nil, errors.New("dialer is nil")
+		return nil, ErrDialerIsNil
 	}
 
 	if log == nil {
-		return nil, errors.New("logger is nil")
+		return nil, ErrLoggerIsNil
 	}
 
-	initConnNum := len(initEndpoints) * connsPerEndpoint
+	requiredConnNum := len(initEndpoints) * connsPerEndpoint
 	if size <= 0 {
-		size = int(math.Max(1024, float64(initConnNum)))
+		size = int(math.Max(1024, float64(requiredConnNum)))
 	}
 
 	// copy endpoints
@@ -60,37 +72,83 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 
 	pool := &connPool{
 		connChan:         make(chan gnet.Conn, size),
-		endpoints:        endpoints,
 		connsPerEndpoint: connsPerEndpoint,
+		requiredConnNum:  requiredConnNum,
 		dialer:           dialer,
 		log:              log,
+		backoff: exponentialBackoff{
+			initialInterval: 10 * time.Second,
+			maxInterval:     1 * time.Minute,
+			multiplier:      2,
+			randomization:   0.5,
+		},
+		closeCh: make(chan struct{}),
 	}
+
+	// store endpoints
+	pool.endpoints.Store(endpoints)
 
 	// store endpoints to map
 	for _, e := range endpoints {
 		pool.endpointMap.Store(e, struct{}{})
 	}
 
-	err := pool.initConns(initConnNum)
+	err := pool.initConns(requiredConnNum)
 	if err != nil {
 		return nil, err
 	}
+
+	// 启动后台任务，定期检查并尝试恢复不可用的节点
+	go pool.recoverAndRebalance()
 
 	return pool, nil
 }
 
 type connPool struct {
-	sync.RWMutex
-	connChan         chan gnet.Conn
-	index            atomic.Uint64
-	endpoints        []string
-	endpointMap      sync.Map
-	connsPerEndpoint int
-	dialer           Dialer
-	log              logger.Logger
+	connChan           chan gnet.Conn
+	index              atomic.Uint64
+	endpoints          atomic.Value
+	endpointMap        sync.Map
+	connsPerEndpoint   int
+	requiredConnNum    int
+	dialer             Dialer
+	log                logger.Logger
+	unavailable        sync.Map
+	retryCounts        sync.Map
+	backoff            exponentialBackoff
+	closeCh            chan struct{}
+	closeOnce          sync.Once
+	endpointConnCounts sync.Map // 记录每个节点的连接数
+}
+
+// exponentialBackoff implements an exponential backoff strategy
+type exponentialBackoff struct {
+	initialInterval time.Duration
+	maxInterval     time.Duration
+	multiplier      float64
+	randomization   float64
+}
+
+// nextInterval calculates the next interval with exponential backoff
+func (b *exponentialBackoff) nextInterval(retryCount int) time.Duration {
+	if retryCount <= 0 {
+		return b.initialInterval
+	}
+
+	interval := float64(b.initialInterval) * math.Pow(b.multiplier, float64(retryCount))
+	if b.randomization > 0 {
+		interval = interval * (1 + b.randomization*(rand.Float64()*2-1))
+	}
+
+	if interval > float64(b.maxInterval) {
+		interval = float64(b.maxInterval)
+	}
+
+	return time.Duration(interval)
 }
 
 func (p *connPool) Get() (gnet.Conn, error) {
+	p.log.Debug("Get()")
 	select {
 	case conn := <-p.connChan:
 		return conn, nil
@@ -99,19 +157,44 @@ func (p *connPool) Get() (gnet.Conn, error) {
 	}
 }
 
-func (p *connPool) getEndpoint() string {
-	index := p.index.Load()
-	p.index.Add(1)
+func (p *connPool) getEndpoint() (string, error) {
+	p.log.Debug("getEndpoint()")
+	epValue := p.endpoints.Load()
+	endpoints, ok := epValue.([]string)
+	if !ok || len(endpoints) == 0 {
+		return "", ErrNoAvailableEndpoint
+	}
 
-	p.RLock()
-	ep := p.endpoints[index%uint64(len(p.endpoints))]
-	p.RUnlock()
-	return ep
+	for i := 0; i < len(endpoints); i++ {
+		index := p.index.Load()
+		p.index.Add(1)
+		ep := endpoints[index%uint64(len(endpoints))]
+
+		// 在不可用节点列表里，跳过
+		_, unavailable := p.unavailable.Load(ep)
+		if unavailable {
+			continue
+		}
+
+		return ep, nil
+	}
+
+	return "", ErrNoAvailableEndpoint
 }
 
 func (p *connPool) newConn() (gnet.Conn, error) {
-	ep := p.getEndpoint()
-	return p.dialer.Dial(ep)
+	p.log.Debug("newConn()")
+	ep, err := p.getEndpoint()
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := p.dialer.Dial(ep)
+	if err != nil {
+		p.markUnavailable(ep)
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (p *connPool) initConns(count int) error {
@@ -127,20 +210,24 @@ func (p *connPool) initConns(count int) error {
 	}
 
 	for _, conn := range conns {
-		p.Put(conn, nil)
+		p.put(conn, nil, true)
 	}
 
 	return nil
 }
 
 func (p *connPool) Put(conn gnet.Conn, err error) {
+	p.put(conn, err, false)
+}
+
+func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 	if conn == nil {
 		return
 	}
 
 	remoteAddr := conn.RemoteAddr()
 	if remoteAddr == nil {
-		p.log.Error("conn is not nil but remote address is nil")
+		p.log.Error("remote address is nil, it is closed, stop putting")
 		return
 	}
 
@@ -152,37 +239,50 @@ func (p *connPool) Put(conn gnet.Conn, err error) {
 		return
 	}
 
-	// 如果出错了，先关闭该连接，再尝试补充一个新连接，避免连接数不均衡导致流量不均衡
+	// 如果出错了，先关闭该连接
 	if ok && err != nil {
-		p.log.Info("connection error, close it and try to open a new one, addr:", addr)
+		p.log.Warn("connection error, close it, addr:", addr, ", err:", err)
 		CloseConn(conn, 2*time.Minute)
-		newConn, err := p.dialer.Dial(addr)
-		if err != nil {
-			return
-		}
-
-		select {
-		case p.connChan <- newConn:
-			return
-		case <-time.After(1 * time.Second):
-			// connChan is full, close the new conn
-			_ = newConn.Close()
-			return
-		}
+		return
 	}
 
 	select {
 	case p.connChan <- conn:
+		// 更新连接数
+		if isNewConn {
+			p.incEndpointConnCount(addr)
+		}
 	default:
 		// connChan is full, close the connection after 2m
 		CloseConn(conn, 2*time.Minute)
 	}
 }
 
+func (p *connPool) incEndpointConnCount(addr string) {
+	count, _ := p.endpointConnCounts.LoadOrStore(addr, 0)
+	p.endpointConnCounts.Store(addr, count.(int)+1)
+}
+
+func (p *connPool) decEndpointConnCount(addr string) {
+	count, ok := p.endpointConnCounts.Load(addr)
+	if !ok {
+		return
+	}
+
+	if count.(int) > 0 {
+		if count.(int) == 1 {
+			p.endpointConnCounts.Delete(addr)
+			return
+		}
+
+		p.endpointConnCounts.Store(addr, count.(int)-1)
+	}
+}
+
 func (p *connPool) UpdateEndpoints(all, add, del []string) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			p.log.Errorf("panic when update endpoints:", rec)
+			p.log.Error("panic when update endpoints:", rec)
 			p.log.Error(string(debug.Stack()))
 		}
 	}()
@@ -196,9 +296,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 	p.log.Debug("del:", del)
 	endpoints := make([]string, 0, len(all))
 	endpoints = append(endpoints, all...)
-	p.Lock()
-	p.endpoints = endpoints
-	p.Unlock()
+	p.endpoints.Store(endpoints)
 
 	// store new endpoints to map
 	p.log.Info("add new connections...")
@@ -209,6 +307,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 			conn, err := p.dialer.Dial(ep)
 			if err != nil {
 				p.log.Error("new connection failed, addr:", ep, ", err:", err)
+				p.markUnavailable(ep)
 				continue
 			}
 
@@ -235,28 +334,38 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 		return
 	}
 
+	// 从 unavailable 列表中移除删除的节点
+	for ep := range delEndpoints {
+		p.unavailable.Delete(ep)
+		p.retryCounts.Delete(ep)
+	}
+
 	// delete connections for deleted endpoints
 	p.log.Info("delete old connections...")
-	for i := 0; i < len(p.connChan); i++ {
-		conn, ok := <-p.connChan
-		if !ok {
-			break
-		}
+	for i := 0; i < cap(p.connChan); i++ {
+		select {
+		case conn := <-p.connChan:
+			// fix: when conn is closed by peer, remote addr may be nil
+			remoteAddr := conn.RemoteAddr()
+			if remoteAddr == nil {
+				CloseConn(conn, 0)
+				continue
+			}
 
-		// fix: when conn is closed by peer, remote add may be nil
-		remoteAddr := conn.RemoteAddr()
-		if remoteAddr == nil {
-			CloseConn(conn, 0)
-			continue
-		}
-
-		addr := remoteAddr.String()
-		_, ok = delEndpoints[addr]
-		if ok {
-			p.log.Info("endpoint deleted, close its connection, addr:", addr)
-			CloseConn(conn, 2*time.Minute)
-		} else {
-			p.connChan <- conn
+			addr := remoteAddr.String()
+			if _, ok := delEndpoints[addr]; ok {
+				p.log.Info("endpoint deleted, close its connection, addr:", addr)
+				CloseConn(conn, 2*time.Minute)
+			} else {
+				select {
+				case p.connChan <- conn:
+				default:
+					CloseConn(conn, 2*time.Minute)
+				}
+			}
+		default:
+			// 没有更多的连接了，退出循环
+			return
 		}
 	}
 }
@@ -283,4 +392,246 @@ func CloseConn(conn gnet.Conn, after time.Duration) {
 			return
 		}
 	}()
+}
+
+// OnConnClosed handles conn closed event, call it when conn is closed actively by the server
+func (p *connPool) OnConnClosed(conn gnet.Conn, err error) {
+	remoteAddr := conn.RemoteAddr()
+	if remoteAddr != nil {
+		addr := remoteAddr.String()
+		if err != nil {
+			p.markUnavailable(addr)
+		}
+		p.decEndpointConnCount(addr)
+	}
+
+	// 使用临时切片存储从 connChan 中取出的连接
+	tempConns := make([]gnet.Conn, 0, cap(p.connChan))
+
+	// 遍历 connChan，找到并删除关闭的连接
+loop:
+	for i := 0; i < cap(p.connChan); i++ {
+		select {
+		case chConn := <-p.connChan:
+			if chConn != conn && chConn.RemoteAddr() != nil {
+				// 如果不是要删除的连接，则存储到临时切片
+				tempConns = append(tempConns, chConn)
+			} else {
+				if remoteAddr != nil {
+					p.log.Debug("remove conn from pool, addr:", remoteAddr.String())
+				}
+			}
+		default:
+			// 没有更多的连接了，退出循环
+			break loop
+		}
+	}
+
+	// 将非目标连接重新放回 connChan
+	for _, chConn := range tempConns {
+		select {
+		case p.connChan <- chConn:
+		default:
+			// 如果 connChan 已满，停止放回
+			return
+		}
+	}
+}
+
+func (p *connPool) markUnavailable(ep string) {
+	p.log.Info("endpoint cannot be connected, marking as unavailable, addr: ", ep)
+	p.unavailable.Store(ep, time.Now())
+	p.retryCounts.Store(ep, 0)
+}
+
+// recoverAndRebalance 定期检查并尝试恢复不可用的节点
+func (p *connPool) recoverAndRebalance() {
+	recoverTicker := time.NewTicker(10 * time.Second)
+	defer recoverTicker.Stop()
+	dumpTicker := time.NewTicker(10 * time.Second)
+	defer dumpTicker.Stop()
+	reBalanceTicker := time.NewTicker(1 * time.Minute)
+	defer reBalanceTicker.Stop()
+
+	for {
+		select {
+		case <-recoverTicker.C:
+			// 重新均衡
+			recovered := p.recover()
+			if recovered {
+				p.rebalance()
+			}
+		case <-dumpTicker.C:
+			p.dump()
+		case <-reBalanceTicker.C:
+			p.rebalance()
+		case <-p.closeCh:
+			return
+		}
+	}
+}
+
+func (p *connPool) dump() {
+	p.log.Info("all endpoints:")
+	eps := p.endpoints.Load()
+	endpoints, ok := eps.([]string)
+	if ok {
+		for _, ep := range endpoints {
+			p.log.Info(ep)
+		}
+	}
+
+	dump := false
+	p.unavailable.Range(func(key, value any) bool {
+		if !dump {
+			p.log.Info("unavailable endpoints:")
+		}
+		p.log.Info(key)
+		return true
+	})
+
+	p.log.Info("opened connections:")
+	p.endpointConnCounts.Range(func(key, value any) bool {
+		p.log.Info("endpoint: ", key, ", conns: ", value.(int))
+		return true
+	})
+}
+
+func (p *connPool) recover() bool {
+	recovered := false
+	p.unavailable.Range(func(key, value any) bool {
+		lastUnavailable := value.(time.Time)
+		retries := 0
+		retry, ok := p.retryCounts.Load(key)
+		if ok {
+			retries = retry.(int)
+		}
+		if time.Since(lastUnavailable) > p.backoff.nextInterval(retries) {
+			// 尝试创建新连接
+			conn, err := p.dialer.Dial(key.(string))
+			if err == nil {
+				p.log.Info("endpoint recovered, addr: ", key)
+				p.put(conn, nil, true)
+				p.unavailable.Delete(key)
+				p.retryCounts.Delete(key)
+				recovered = true
+			} else {
+				p.log.Info("failed to recover endpoint, addr: ", key, ", err: ", err)
+				// 更新重试次数
+				retries++
+				p.retryCounts.Store(key, retries)
+			}
+		}
+		return true
+	})
+	if recovered {
+		p.log.Info("recover triggered")
+	}
+	return recovered
+}
+
+func (p *connPool) rebalance() {
+	// 计算当前已创建的连接数
+	totalConnCount := 0
+	p.endpointConnCounts.Range(func(key, value any) bool {
+		totalConnCount += value.(int)
+		return true
+	})
+
+	// 使用实际的连接数和 p.requiredConnNum 取最大值
+	totalConnCount = int(math.Max(float64(totalConnCount), float64(p.requiredConnNum)))
+	if totalConnCount == 0 {
+		return
+	}
+
+	unavailableEndpointNum := 0
+	p.unavailable.Range(func(key, value any) bool {
+		unavailableEndpointNum++
+		return true
+	})
+
+	epValue := p.endpoints.Load()
+	endpoints, ok := epValue.([]string)
+	if !ok {
+		return
+	}
+
+	availableEndpointNum := len(endpoints) - unavailableEndpointNum
+	if availableEndpointNum <= 0 {
+		return
+	}
+
+	expectedConnsPerEndpoint := int(math.Ceil(float64(totalConnCount) / float64(availableEndpointNum)))
+
+	rebalanced := false
+	p.endpointConnCounts.Range(func(key, value any) bool {
+		addr := key.(string)
+		currentCount := value.(int)
+		if currentCount < expectedConnsPerEndpoint {
+			rebalanced = true
+			// 增加连接数
+			for i := currentCount; i < expectedConnsPerEndpoint; i++ {
+				conn, err := p.dialer.Dial(addr)
+				if err == nil {
+					p.log.Info("adding connection for addr: ", addr)
+					p.put(conn, nil, true)
+				} else {
+					break
+				}
+			}
+		} else if currentCount > expectedConnsPerEndpoint {
+			rebalanced = true
+			// 减少连接数
+			for i := currentCount; i > expectedConnsPerEndpoint; i-- {
+				p.removeEndpointConn(addr)
+			}
+		}
+		return true
+	})
+
+	if rebalanced {
+		p.log.Info("rebalance triggered")
+	}
+}
+
+func (p *connPool) removeEndpointConn(addr string) {
+	for i := 0; i < cap(p.connChan); i++ {
+		select {
+		case conn := <-p.connChan:
+			remoteAddr := conn.RemoteAddr()
+			if remoteAddr == nil {
+				continue
+			}
+
+			if remoteAddr.String() == addr {
+				p.log.Info("reducing connection for addr: ", addr)
+				CloseConn(conn, 2*time.Minute)
+				p.decEndpointConnCount(addr)
+				return
+			}
+
+			// 不是目标连接，放回去
+			p.connChan <- conn
+		default:
+			// 没有更多的连接了，退出循环
+			return
+		}
+	}
+}
+
+// Close 关闭连接池，释放资源
+func (p *connPool) Close() {
+	p.closeOnce.Do(func() {
+		close(p.closeCh)
+
+		// 关闭所有连接
+		for {
+			select {
+			case conn := <-p.connChan:
+				CloseConn(conn, 0)
+			default:
+				return
+			}
+		}
+	})
 }
