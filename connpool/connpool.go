@@ -193,17 +193,34 @@ func (p *connPool) dialNewConn(ep string) (gnet.Conn, error) {
 
 func (p *connPool) initConns(count int) error {
 	// create some conns and then put them back to the pool
-	conns := make([]gnet.Conn, 0)
+	var wg sync.WaitGroup
+	conns := make(chan gnet.Conn, count)
+	errs := make(chan error, count)
+
 	for i := 0; i < count; i++ {
-		conn, err := p.newConn()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := p.newConn()
+			if err != nil {
+				errs <- err
+				return
+			}
+			conns <- conn
+		}()
+	}
+
+	wg.Wait()
+	close(conns)
+	close(errs)
+
+	for err := range errs {
 		if err != nil {
 			return err
 		}
-
-		conns = append(conns, conn)
 	}
 
-	for _, conn := range conns {
+	for conn := range conns {
 		p.put(conn, nil, true)
 	}
 
@@ -226,10 +243,10 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 	}
 
 	addr := remoteAddr.String()
-	_, ok := p.endpointMap.Load(addr)
-	if !ok {
+	if _, ok := p.endpointMap.Load(addr); !ok {
 		p.log.Info("endpoint deleted, close its connection, addr:", addr)
 		CloseConn(conn, 2*time.Minute)
+		p.decEndpointConnCount(addr) // 提前将节点的连接计数扣减，OnConnClosed()还会再扣一次，有可能导致多扣减，这样设计是避免负载均衡时创建过多的连接
 		return
 	}
 
@@ -341,6 +358,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 			if _, ok := delEndpoints[addr]; ok {
 				p.log.Info("endpoint deleted, close its connection, addr:", addr)
 				CloseConn(conn, 2*time.Minute)
+				p.decEndpointConnCount(addr) // 提前将节点的连接计数扣减，OnConnClosed()还会再扣一次，有可能导致多扣减，这样设计是避免负载均衡时创建过多的连接
 			} else {
 				select {
 				case p.connChan <- conn:
@@ -487,8 +505,7 @@ func (p *connPool) recover() bool {
 	p.unavailable.Range(func(key, value any) bool {
 		lastUnavailable := value.(time.Time)
 		retries := 0
-		retry, ok := p.retryCounts.Load(key)
-		if ok {
+		if retry, ok := p.retryCounts.Load(key); ok {
 			retries = retry.(int)
 		}
 		if time.Since(lastUnavailable) > p.backoff.Next(retries) {
@@ -553,6 +570,11 @@ func (p *connPool) rebalance() {
 		addr := key.(string)
 		currentCount := value.(int)
 		if currentCount < expectedConnsPerEndpoint {
+			// 节点已经不在服务发现结果列表里了，不再增加连接数
+			if _, ok := p.endpointMap.Load(addr); !ok {
+				return true
+			}
+
 			rebalanced = true
 			// 增加连接数
 			for i := currentCount; i < expectedConnsPerEndpoint; i++ {
