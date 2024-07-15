@@ -168,7 +168,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	if err != nil {
 		return nil, err
 	}
-	w.log.Info("use conn: ", conn.RemoteAddr().String())
+	w.log.Debug("use conn: ", conn.RemoteAddr().String())
 	w.setConn(conn)
 
 	// 启动处理协程
