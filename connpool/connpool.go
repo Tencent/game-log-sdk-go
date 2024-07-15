@@ -127,7 +127,16 @@ func (p *connPool) Get() (gnet.Conn, error) {
 	case conn := <-p.connChan:
 		return conn, nil
 	default:
-		return p.newConn()
+		conn, err := p.newConn()
+		if err != nil {
+			return nil, err
+		}
+		addr := conn.RemoteAddr()
+		if addr == nil {
+			return nil, err
+		}
+		p.incEndpointConnCount(addr.String())
+		return conn, nil
 	}
 }
 
@@ -580,7 +589,6 @@ func (p *connPool) removeEndpointConn(addr string) {
 			if remoteAddr.String() == addr {
 				p.log.Info("reducing connection for addr: ", addr)
 				CloseConn(conn, 2*time.Minute)
-				p.decEndpointConnCount(addr)
 				return
 			}
 

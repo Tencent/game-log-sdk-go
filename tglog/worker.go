@@ -833,7 +833,6 @@ func (w *worker) updateConnAsync(err error) {
 	case w.updateConnChan <- err:
 	default:
 	}
-
 }
 
 func (w *worker) updateConn(old gnet.Conn, err error) {
@@ -850,9 +849,12 @@ func (w *worker) updateConn(old gnet.Conn, err error) {
 		oldConn = w.getConn()
 	}
 
-	w.client.putConn(oldConn, err)
 	ok := w.casConn(oldConn, newConn)
 	if ok {
+		// 切换成功且没有错误才放回池子里
+		if err == nil {
+			w.client.putConn(oldConn, err)
+		}
 		w.metrics.incUpdateConn(getErrorCode(err))
 	} else {
 		w.client.putConn(newConn, nil)
@@ -869,9 +871,7 @@ func (w *worker) getConn() gnet.Conn {
 
 func (w *worker) onConnClosed(conn gnet.Conn, err error) {
 	oldConn := w.conn.Load().(gnet.Conn)
-	connAddr := conn.RemoteAddr()
-	oldConnAddr := oldConn.RemoteAddr()
-	if oldConn == conn || (connAddr != nil && oldConnAddr != nil && connAddr.String() == oldConnAddr.String()) {
+	if oldConn == conn {
 		w.updateConnAsync(err)
 	}
 }
