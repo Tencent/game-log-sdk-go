@@ -12,6 +12,7 @@ import (
 	"github.com/panjf2000/gnet/v2"
 
 	"git.woa.com/tglog/v3/sdk-go/syncx"
+	"git.woa.com/tglog/v3/sdk-go/util"
 
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"git.woa.com/tglog/v3/sdk-go/logger"
@@ -403,6 +404,12 @@ func (w *worker) handleSendData(req *sendDataReq) {
 
 func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// w.log.Debug("worker[", w.index, "] sendBatch")
+	// 检查重试次数是否超过最大重试次数
+	if b.retries > w.options.MaxRetries {
+		b.done(errSendTimeout)
+		return
+	}
+
 	b.lastSendTime = time.Now()
 	_, err := b.encode()
 	if err != nil {
@@ -520,6 +527,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 		return
 	}
 
+	batch.retries++
 	go func() {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -529,22 +537,18 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			}
 		}()
 
-		minBackoff := 500 * time.Millisecond
-		maxBackoff := 10 * time.Second
-		jitterPercent := 0.2
-
-		backoff := time.Duration(batch.retries+1) * minBackoff
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+		// 使用 ExponentialBackoff 计算退避时间
+		backoff := util.ExponentialBackoff{
+			InitialInterval: 100 * time.Millisecond,
+			MaxInterval:     10 * time.Second,
+			Multiplier:      2.0,
+			Randomization:   0.2,
 		}
 
-		// rand在并发的时候会panic，不能共享
-		jitterRand := rand.New(rand.NewSource(time.Now().UnixNano()))
-		jitter := jitterRand.Float64() * float64(backoff) * jitterPercent
-		backoff += time.Duration(jitter)
+		waitTime := backoff.Next(batch.retries)
 
 		select {
-		case <-time.After(backoff):
+		case <-time.After(waitTime):
 			// 再次检查是否已经处于关闭状态
 			if w.getState() == stateClosed {
 				w.log.Warn("worker is closed when we are going to retry")
@@ -564,13 +568,6 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 }
 
 func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
-	batch.retries++
-	if batch.retries >= w.options.MaxRetries {
-		batch.done(errSendTimeout)
-		// w.log.Debug("to many reties, batch done:", batch.batchID)
-		return
-	}
-
 	// 重试
 	w.metrics.incRetry(w.indexStr)
 	w.log.Info("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID)

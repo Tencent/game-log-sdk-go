@@ -20,7 +20,7 @@ func (b *ExponentialBackoff) Next(retryCount int) time.Duration {
 		return b.InitialInterval
 	}
 
-	interval := float64(b.InitialInterval) * math.Pow(b.Multiplier, float64(retryCount))
+	interval := float64(b.InitialInterval) * math.Pow(b.Multiplier, float64(retryCount-1))
 	if b.Randomization > 0 {
 		interval = interval * (1 + b.Randomization*(rand.Float64()*2-1))
 	}
