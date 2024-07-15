@@ -34,11 +34,17 @@ type Dialer interface {
 // not be used anymore, it is useful for holding the connections to a service whose endpoints can
 // be changed at runtime.
 type EndpointRestrictedConnPool interface {
+	// Get gets a connection
 	Get() (gnet.Conn, error)
+	// Put puts a connection back to the pool, if err is not nil, the connection will be closed by the pool
 	Put(conn gnet.Conn, err error)
+	// UpdateEndpoints updates the endpoints the pool to dial to
 	UpdateEndpoints(all, add, del []string)
+	// NumPooled returns the connection number in the pool, not the number of all the connection that the pool created
 	NumPooled() int
+	// OnConnClosed used to notify that a connection is closed, the connection will be removed from the pool, if err is not nil, the remote endpoint will mark as unavailable
 	OnConnClosed(conn gnet.Conn, err error)
+	// Close closes the pool
 	Close()
 }
 
