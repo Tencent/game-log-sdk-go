@@ -234,7 +234,7 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 	}
 
 	// 如果出错了，先关闭该连接
-	if ok && err != nil {
+	if err != nil {
 		p.log.Warn("connection error, close it, addr:", addr, ", err:", err)
 		CloseConn(conn, 2*time.Minute)
 		return
