@@ -178,6 +178,11 @@ func (p *connPool) newConn() (gnet.Conn, error) {
 		return nil, err
 	}
 
+	return p.dialNewConn(ep)
+}
+
+func (p *connPool) dialNewConn(ep string) (gnet.Conn, error) {
+	p.log.Debug("dialNewConn()")
 	conn, err := p.dialer.Dial(ep)
 	if err != nil {
 		p.markUnavailable(ep)
@@ -293,22 +298,13 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 		p.endpointMap.Store(ep, struct{}{})
 
 		for i := 0; i < p.connsPerEndpoint; i++ {
-			conn, err := p.dialer.Dial(ep)
+			conn, err := p.dialNewConn(ep)
 			if err != nil {
 				p.log.Error("new connection failed, addr:", ep, ", err:", err)
-				p.markUnavailable(ep)
 				continue
 			}
 
-			p.log.Info("endpoint added, open new connection, addr:", ep)
-			select {
-			case p.connChan <- conn:
-				continue
-			case <-time.After(1 * time.Second):
-				// connChan is full, close the new conn
-				_ = conn.Close()
-				continue
-			}
+			p.put(conn, nil, true)
 		}
 	}
 
