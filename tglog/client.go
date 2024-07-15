@@ -281,7 +281,7 @@ func (c *client) Dial(addr string) (gnet.Conn, error) {
 		return c.netClient.Dial(c.options.Network, addr)
 	}
 
-	err := udp.Reachable(addr, []byte("__probe__|_|_|_\n"), 100*time.Millisecond, 100*time.Millisecond)
+	err := udp.Reachable(addr, []byte("\n"), 100*time.Millisecond, 100*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
