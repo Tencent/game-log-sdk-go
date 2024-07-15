@@ -418,7 +418,7 @@ loop:
 		case p.connChan <- chConn:
 		default:
 			// 如果 connChan 已满，停止放回
-			return
+			CloseConn(chConn, 2*time.Minute)
 		}
 	}
 }
@@ -567,9 +567,7 @@ func (p *connPool) rebalance() {
 		} else if currentCount > expectedConnsPerEndpoint {
 			rebalanced = true
 			// 减少连接数
-			for i := currentCount; i > expectedConnsPerEndpoint; i-- {
-				p.removeEndpointConn(addr)
-			}
+			p.removeEndpointConn(addr, currentCount-expectedConnsPerEndpoint)
 		}
 		return true
 	})
@@ -579,7 +577,10 @@ func (p *connPool) rebalance() {
 	}
 }
 
-func (p *connPool) removeEndpointConn(addr string) {
+func (p *connPool) removeEndpointConn(addr string, count int) {
+	var leftConns []gnet.Conn
+	var removed int
+loop:
 	for i := 0; i < cap(p.connChan); i++ {
 		select {
 		case conn := <-p.connChan:
@@ -591,14 +592,27 @@ func (p *connPool) removeEndpointConn(addr string) {
 			if remoteAddr.String() == addr {
 				p.log.Info("reducing connection for addr: ", addr)
 				CloseConn(conn, 2*time.Minute)
-				return
+				removed++
+				if removed >= count {
+					break loop
+				}
+
+				continue
 			}
 
 			// 不是目标连接，放回去
-			p.connChan <- conn
+			leftConns = append(leftConns, conn)
 		default:
 			// 没有更多的连接了，退出循环
-			return
+			break loop
+		}
+	}
+
+	for _, conn := range leftConns {
+		select {
+		case p.connChan <- conn:
+		default:
+			CloseConn(conn, 2*time.Minute)
 		}
 	}
 }
