@@ -280,7 +280,7 @@ func (c *client) Dial(addr string) (gnet.Conn, error) {
 		return c.netClient.Dial(c.options.Network, addr)
 	}
 
-	err := udp.Reachable(addr, []byte("\n"), c.options.UDPProbeDialTimeout, c.options.UDPProbeRequestTimeout)
+	err := udp.Probe(addr, []byte("\n"), c.options.UDPProbeDialTimeout, c.options.UDPProbeRequestTimeout)
 	if err != nil {
 		return nil, err
 	}

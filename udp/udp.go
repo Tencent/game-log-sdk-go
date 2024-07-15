@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Reachable test if an address is reachable by dialing with a request
-func Reachable(addr string, req []byte, dialTimeout, readTimeout time.Duration) error {
+// Probe test if an address is reachable by dialing with a request
+func Probe(addr string, req []byte, dialTimeout, readTimeout time.Duration) error {
 	// 先用TCP测试IP是否可达
 	tcpConn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
