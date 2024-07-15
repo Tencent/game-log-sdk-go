@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"math/rand"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"github.com/panjf2000/gnet/v2"
 
 	"git.woa.com/tglog/v3/sdk-go/logger"
+	"git.woa.com/tglog/v3/sdk-go/util"
 )
 
 // error variables
@@ -76,11 +76,11 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 		requiredConnNum:  requiredConnNum,
 		dialer:           dialer,
 		log:              log,
-		backoff: exponentialBackoff{
-			initialInterval: 10 * time.Second,
-			maxInterval:     1 * time.Minute,
-			multiplier:      2,
-			randomization:   0.5,
+		backoff: util.ExponentialBackoff{
+			InitialInterval: 10 * time.Second,
+			MaxInterval:     1 * time.Minute,
+			Multiplier:      2,
+			Randomization:   0.5,
 		},
 		closeCh: make(chan struct{}),
 	}
@@ -115,36 +115,10 @@ type connPool struct {
 	log                logger.Logger
 	unavailable        sync.Map
 	retryCounts        sync.Map
-	backoff            exponentialBackoff
+	backoff            util.ExponentialBackoff
 	closeCh            chan struct{}
 	closeOnce          sync.Once
 	endpointConnCounts sync.Map // 记录每个节点的连接数
-}
-
-// exponentialBackoff implements an exponential backoff strategy
-type exponentialBackoff struct {
-	initialInterval time.Duration
-	maxInterval     time.Duration
-	multiplier      float64
-	randomization   float64
-}
-
-// nextInterval calculates the next interval with exponential backoff
-func (b *exponentialBackoff) nextInterval(retryCount int) time.Duration {
-	if retryCount <= 0 {
-		return b.initialInterval
-	}
-
-	interval := float64(b.initialInterval) * math.Pow(b.multiplier, float64(retryCount))
-	if b.randomization > 0 {
-		interval = interval * (1 + b.randomization*(rand.Float64()*2-1))
-	}
-
-	if interval > float64(b.maxInterval) {
-		interval = float64(b.maxInterval)
-	}
-
-	return time.Duration(interval)
 }
 
 func (p *connPool) Get() (gnet.Conn, error) {
@@ -506,7 +480,7 @@ func (p *connPool) recover() bool {
 		if ok {
 			retries = retry.(int)
 		}
-		if time.Since(lastUnavailable) > p.backoff.nextInterval(retries) {
+		if time.Since(lastUnavailable) > p.backoff.Next(retries) {
 			// 尝试创建新连接
 			conn, err := p.dialer.Dial(key.(string))
 			if err == nil {
