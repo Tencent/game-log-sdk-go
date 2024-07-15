@@ -468,7 +468,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
 	if b.retries > 0 {
-		w.log.Warn("retry batch to conn:", conn.RemoteAddr(), ", workerID:", w.index, ", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
+		w.log.Debug("retry batch to conn:", conn.RemoteAddr(), ", workerID:", w.index, ", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
 	}
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
 		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
@@ -557,7 +557,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			}
 
 			// 放入重试队列
-			w.log.Warn("put to retry...")
+			w.log.Debug("put to retry...")
 			w.retryBatches <- batch
 		case <-ctx.Done():
 			// 进程退出
@@ -570,7 +570,7 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 	// 重试
 	w.metrics.incRetry(w.indexStr)
-	w.log.Info("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID)
+	w.log.Debug("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID)
 	w.sendBatch(batch, retryOnFail)
 }
 
