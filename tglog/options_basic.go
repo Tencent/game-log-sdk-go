@@ -4,9 +4,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"git.woa.com/tglog/v3/sdk-go/bufferpool"
 	"git.woa.com/tglog/v3/sdk-go/logger"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Option is the Options helper.
@@ -225,5 +226,26 @@ func WithMetricsRegistry(reg prometheus.Registerer) Option {
 			return
 		}
 		o.MetricsRegistry = reg
+	}
+}
+
+// WithNoUDPProbe sets NoUDPProbe
+func WithNoUDPProbe(no bool) Option {
+	return func(o *Options) {
+		o.NoUDPProbe = no
+	}
+}
+
+// WithUDPProbeDialTimeout sets UDPProbeDialTimeout
+func WithUDPProbeDialTimeout(to time.Duration) Option {
+	return func(o *Options) {
+		o.UDPProbeDialTimeout = to
+	}
+}
+
+// WithUDPProbeRequestTimeout sets UDPProbeRequestTimeout
+func WithUDPProbeRequestTimeout(to time.Duration) Option {
+	return func(o *Options) {
+		o.UDPProbeRequestTimeout = to
 	}
 }

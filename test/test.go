@@ -119,6 +119,7 @@ func main() {
 			tglog.WithBatchingMaxMessages(20),
 			tglog.WithBatchingMaxSize(10*1024),
 			tglog.WithMaxRetries(3),
+			// tglog.WithNoUDPProbe(true),
 		)
 	}
 	if err != nil {

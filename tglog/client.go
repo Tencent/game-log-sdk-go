@@ -7,7 +7,6 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
@@ -277,11 +276,11 @@ func (c *client) initWorkers() error {
 }
 
 func (c *client) Dial(addr string) (gnet.Conn, error) {
-	if c.options.isTCP {
+	if c.options.isTCP || c.options.NoUDPProbe {
 		return c.netClient.Dial(c.options.Network, addr)
 	}
 
-	err := udp.Reachable(addr, []byte("\n"), 100*time.Millisecond, 100*time.Millisecond)
+	err := udp.Reachable(addr, []byte("\n"), c.options.UDPProbeDialTimeout, c.options.UDPProbeRequestTimeout)
 	if err != nil {
 		return nil, err
 	}
