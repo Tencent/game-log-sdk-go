@@ -143,7 +143,9 @@ func (p *connPool) Get() (gnet.Conn, error) {
 		}
 		addr := conn.RemoteAddr()
 		if addr == nil {
-			return nil, err
+			CloseConn(conn, 0)
+			p.log.Error("new connection has nil remote address")
+			return nil, errors.New("new connection has nil remote address")
 		}
 		p.incEndpointConnCount(addr.String())
 		return conn, nil
@@ -243,6 +245,7 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 	remoteAddr := conn.RemoteAddr()
 	if remoteAddr == nil {
 		p.log.Error("remote address is nil, it is closed, stop putting")
+		CloseConn(conn, defaultConnCloseDelay)
 		return
 	}
 
@@ -268,6 +271,7 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 		}
 	default:
 		// connChan is full, close the connection after 2m
+		p.log.Warn("connection pool is full, closing connection, addr: ", addr)
 		CloseConn(conn, defaultConnCloseDelay)
 	}
 }
@@ -637,6 +641,7 @@ func (p *connPool) rebalance() {
 					p.put(conn, nil, true)
 					rebalanced = true
 				} else {
+					p.log.Warn("failed to add connection during rebalance, addr: ", addr, ", err: ", err)
 					break
 				}
 			}
@@ -660,6 +665,7 @@ func (p *connPool) rebalance() {
 				p.put(conn, nil, true)
 				rebalanced = true
 			} else {
+				p.log.Warn("failed to add connection during rebalance, addr: ", addr, ", err: ", err)
 				break
 			}
 		}
