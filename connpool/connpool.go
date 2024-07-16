@@ -16,6 +16,10 @@ import (
 	"git.woa.com/tglog/v3/sdk-go/util"
 )
 
+const (
+	defaultConnCloseDelay = 2 * time.Minute
+)
+
 // error variables
 var (
 	ErrInitEndpointEmpty   = errors.New("init endpoints is empty")
@@ -245,15 +249,14 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 	addr := remoteAddr.String()
 	if _, ok := p.endpointMap.Load(addr); !ok {
 		p.log.Info("endpoint deleted, close its connection, addr:", addr)
-		CloseConn(conn, 2*time.Minute)
-		p.decEndpointConnCount(addr) // 提前将节点的连接计数扣减，OnConnClosed()还会再扣一次，有可能导致多扣减，这样设计是避免负载均衡时创建过多的连接
+		CloseConn(conn, defaultConnCloseDelay)
 		return
 	}
 
 	// 如果出错了，先关闭该连接
 	if err != nil {
 		p.log.Warn("connection error, close it, addr:", addr, ", err:", err)
-		CloseConn(conn, 2*time.Minute)
+		CloseConn(conn, defaultConnCloseDelay)
 		return
 	}
 
@@ -265,7 +268,7 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 		}
 	default:
 		// connChan is full, close the connection after 2m
-		CloseConn(conn, 2*time.Minute)
+		CloseConn(conn, defaultConnCloseDelay)
 	}
 }
 
@@ -310,65 +313,66 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 	p.endpoints.Store(endpoints)
 
 	// store new endpoints to map
-	p.log.Info("add new connections...")
 	for _, ep := range add {
 		p.endpointMap.Store(ep, struct{}{})
-
-		for i := 0; i < p.connsPerEndpoint; i++ {
-			conn, err := p.dialNewConn(ep)
-			if err != nil {
-				p.log.Error("new connection failed, addr:", ep, ", err:", err)
-				continue
-			}
-
-			p.put(conn, nil, true)
-		}
 	}
 
 	//
 	delEndpoints := make(map[string]struct{})
 	for _, ep := range del {
 		p.endpointMap.Delete(ep)
+		p.unavailable.Delete(ep)
+		p.retryCounts.Delete(ep)
+
 		delEndpoints[ep] = struct{}{}
 	}
 
-	if len(delEndpoints) == 0 {
-		return
-	}
-
-	// 从 unavailable 列表中移除删除的节点
-	for ep := range delEndpoints {
-		p.unavailable.Delete(ep)
-		p.retryCounts.Delete(ep)
-	}
-
-	// delete connections for deleted endpoints
-	p.log.Info("delete old connections...")
-	for i := 0; i < cap(p.connChan); i++ {
-		select {
-		case conn := <-p.connChan:
-			// fix: when conn is closed by peer, remote addr may be nil
-			remoteAddr := conn.RemoteAddr()
-			if remoteAddr == nil {
-				CloseConn(conn, 0)
-				continue
-			}
-
-			addr := remoteAddr.String()
-			if _, ok := delEndpoints[addr]; ok {
-				p.log.Info("endpoint deleted, close its connection, addr:", addr)
-				CloseConn(conn, 2*time.Minute)
-				p.decEndpointConnCount(addr) // 提前将节点的连接计数扣减，OnConnClosed()还会再扣一次，有可能导致多扣减，这样设计是避免负载均衡时创建过多的连接
-			} else {
-				select {
-				case p.connChan <- conn:
-				default:
-					CloseConn(conn, 2*time.Minute)
+	if len(add) > 0 {
+		p.log.Info("add new connections...")
+		expectedConnPerEndpoint := p.getExpectedConnPerEndpoint()
+		for _, ep := range add {
+			for i := 0; i < expectedConnPerEndpoint; i++ {
+				conn, err := p.dialNewConn(ep)
+				if err != nil {
+					p.log.Error("new connection failed, addr:", ep, ", err:", err)
+					continue
 				}
+
+				p.log.Info("endpoint added, add new connection, addr:", ep)
+				p.put(conn, nil, true)
 			}
-		default:
-			// 没有更多的连接了，退出循环
-			return
+		}
+	}
+
+	if len(delEndpoints) > 0 {
+		// delete connections for deleted endpoints
+		p.log.Info("delete old connections...")
+	loop:
+		for i := 0; i < cap(p.connChan); i++ {
+			select {
+			case conn := <-p.connChan:
+				// fix: when conn is closed by peer, remote addr may be nil
+				remoteAddr := conn.RemoteAddr()
+				if remoteAddr == nil {
+					CloseConn(conn, 0)
+					continue
+				}
+
+				addr := remoteAddr.String()
+				if _, ok := delEndpoints[addr]; ok {
+					p.log.Info("endpoint deleted, close its connection, addr:", addr)
+					CloseConn(conn, defaultConnCloseDelay)
+				} else {
+					select {
+					case p.connChan <- conn:
+					default:
+						CloseConn(conn, defaultConnCloseDelay)
+					}
+				}
+			default:
+				// 没有更多的连接了，退出循环
+				break loop
+			}
 		}
 	}
 }
@@ -436,7 +440,7 @@ loop:
 		case p.connChan <- chConn:
 		default:
 			// 如果 connChan 已满，停止放回
-			CloseConn(chConn, 2*time.Minute)
+			CloseConn(chConn, defaultConnCloseDelay)
 		}
 	}
 }
@@ -449,11 +453,14 @@ func (p *connPool) markUnavailable(ep string) {
 
 // recoverAndRebalance 定期检查并尝试恢复不可用的节点
 func (p *connPool) recoverAndRebalance() {
+	// 服务器故障是小概率事件，基本没有需要恢复探测的，频率高一点也没关系
 	recoverTicker := time.NewTicker(10 * time.Second)
 	defer recoverTicker.Stop()
+	// 每10秒打印一下连接池状态
 	dumpTicker := time.NewTicker(10 * time.Second)
 	defer dumpTicker.Stop()
-	reBalanceTicker := time.NewTicker(1 * time.Minute)
+	// 负载均衡会基于现有连接数计算新的平衡连接数，因为有的连接是延迟关闭，所以把负载均衡触发周期设置为大于延迟关闭的时间
+	reBalanceTicker := time.NewTicker(defaultConnCloseDelay + 30*time.Second)
 	defer reBalanceTicker.Stop()
 
 	for {
@@ -532,20 +539,24 @@ func (p *connPool) recover() bool {
 	return recovered
 }
 
-func (p *connPool) rebalance() {
+func (p *connPool) getConnCount() int {
 	// 计算当前已创建的连接数
 	totalConnCount := 0
 	p.endpointConnCounts.Range(func(key, value any) bool {
 		totalConnCount += value.(int)
 		return true
 	})
+	return totalConnCount
+}
 
-	// 使用实际的连接数和 p.requiredConnNum 取最大值
-	totalConnCount = int(math.Max(float64(totalConnCount), float64(p.requiredConnNum)))
-	if totalConnCount == 0 {
-		return
-	}
+func (p *connPool) getAvgConnCount() int {
+	totalConnCount := p.getConnCount()
+	// 使用实际的连接数和p.requiredConnNum取平均数，避免过大或过小
+	result := (totalConnCount + p.requiredConnNum) >> 1
+	return result
+}
 
+func (p *connPool) getAvailableEndpointCount() int {
 	unavailableEndpointNum := 0
 	p.unavailable.Range(func(key, value any) bool {
 		unavailableEndpointNum++
@@ -555,21 +566,61 @@ func (p *connPool) rebalance() {
 	epValue := p.endpoints.Load()
 	endpoints, ok := epValue.([]string)
 	if !ok {
-		return
+		return 0
 	}
 
-	availableEndpointNum := len(endpoints) - unavailableEndpointNum
-	if availableEndpointNum <= 0 {
-		return
+	return len(endpoints) - unavailableEndpointNum
+}
+
+func (p *connPool) getExpectedConnPerEndpoint() int {
+	connCount := p.getConnCount()
+	p.log.Info("connCount: ", connCount)
+	if connCount <= 0 {
+		return 1
 	}
 
-	expectedConnsPerEndpoint := int(math.Ceil(float64(totalConnCount) / float64(availableEndpointNum)))
+	avgConnCount := p.getAvgConnCount()
+	p.log.Info("avgConnCount: ", avgConnCount)
+	if avgConnCount <= 0 {
+		return 1
+	}
+
+	availableEndpointCount := p.getAvailableEndpointCount()
+	p.log.Info("availableEndpointCount: ", availableEndpointCount)
+	if availableEndpointCount <= 0 {
+		return 1
+	}
+
+	// 向下取整，避免过大
+	agvResult := int(math.Floor(float64(avgConnCount) / float64(availableEndpointCount)))
+	// 与初始值取个平均值，避免过大或过小
+	agvResult = (agvResult + p.connsPerEndpoint) >> 1
+
+	result := agvResult
+	// 如果用平均值算出来的比实际需要的小，再放大点
+	if result*availableEndpointCount < connCount {
+		maxConnCount := math.Max(float64(connCount), float64(p.requiredConnNum))
+		result = int(math.Ceil(maxConnCount / float64(availableEndpointCount)))
+		result = int(math.Max(float64(result), float64(p.connsPerEndpoint)))
+	}
+
+	// 保底1个
+	result = int(math.Max(1, float64(result)))
+	p.log.Info("expectedConnPerEndpoint: ", result)
+	return result
+}
+
+func (p *connPool) rebalance() {
+	expectedConnPerEndpoint := p.getExpectedConnPerEndpoint()
+	if expectedConnPerEndpoint <= 0 {
+		return
+	}
 
 	rebalanced := false
 	p.endpointConnCounts.Range(func(key, value any) bool {
 		addr := key.(string)
 		currentCount := value.(int)
-		if currentCount < expectedConnsPerEndpoint {
+		if currentCount < expectedConnPerEndpoint {
 			// 节点已经不在服务发现结果列表里了，不再增加连接数
 			if _, ok := p.endpointMap.Load(addr); !ok {
 				return true
@@ -577,7 +628,7 @@ func (p *connPool) rebalance() {
 
 			rebalanced = true
 			// 增加连接数
-			for i := currentCount; i < expectedConnsPerEndpoint; i++ {
+			for i := currentCount; i < expectedConnPerEndpoint; i++ {
 				conn, err := p.dialer.Dial(addr)
 				if err == nil {
 					p.log.Info("adding connection for addr: ", addr)
@@ -586,10 +637,10 @@ func (p *connPool) rebalance() {
 					break
 				}
 			}
-		} else if currentCount > expectedConnsPerEndpoint {
+		} else if currentCount > expectedConnPerEndpoint {
 			rebalanced = true
 			// 减少连接数
-			p.removeEndpointConn(addr, currentCount-expectedConnsPerEndpoint)
+			p.removeEndpointConn(addr, currentCount-expectedConnPerEndpoint)
 		}
 		return true
 	})
@@ -613,7 +664,8 @@ loop:
 
 			if remoteAddr.String() == addr {
 				p.log.Info("reducing connection for addr: ", addr)
-				CloseConn(conn, 2*time.Minute)
+				// 这里关闭连接关没有扣减连接计数器，如果负载均衡的触发周期小于这个defaultConnCloseDelay，有可能导致一下次负载均衡时算出来的期望连接数不对
+				CloseConn(conn, defaultConnCloseDelay)
 				removed++
 				if removed >= count {
 					break loop
@@ -634,7 +686,7 @@ loop:
 		select {
 		case p.connChan <- conn:
 		default:
-			CloseConn(conn, 2*time.Minute)
+			CloseConn(conn, defaultConnCloseDelay)
 		}
 	}
 }
