@@ -569,46 +569,50 @@ func (p *connPool) getAvailableEndpointCount() int {
 }
 
 func (p *connPool) getExpectedConnPerEndpoint() int {
-	// 我们的连接是延迟关闭了，获取的连接数可能包含那些无效的连接
+	// 当前连接数，我们的连接是延迟关闭了，获取的连接数可能包含这些关闭中的无效的连接，且一般会大于等于初始连接数
 	curConnCount := p.getConnCount()
 	p.log.Info("curConnCount: ", curConnCount)
 	if curConnCount <= 0 {
 		return 1
 	}
 
+	// 初始连接数
 	initConnCount := float64(p.requiredConnNum)
 	p.log.Info("initConnCount: ", initConnCount)
 
+	// 平均连接数，因为计算当前连接数时，包括了延迟关闭但没完全关闭的连接，有可能不准确，用初始连接数和当前连接数的平均值当作参考
 	avgConnCount := (curConnCount + p.requiredConnNum) >> 1
 	p.log.Info("avgConnCount: ", avgConnCount)
 	if avgConnCount <= 0 {
 		return 1
 	}
 
+	// 当前可用节点数
 	availableEndpointCount := p.getAvailableEndpointCount()
 	p.log.Info("availableEndpointCount: ", availableEndpointCount)
 	if availableEndpointCount <= 0 {
 		return 1
 	}
 
-	// 向下取整，避免过大
-	curResult := math.Floor(float64(curConnCount) / float64(availableEndpointCount))
-	p.log.Info("curResult: ", curResult)
+	// 当前连接数/节点数，算一个新的每节点连接数，向下取整，避免过大
+	estimatedVal := math.Floor(float64(curConnCount) / float64(availableEndpointCount))
+	p.log.Info("conns per endpoint by current conn count: ", estimatedVal)
 
-	avgResult := math.Floor(float64(avgConnCount) / float64(availableEndpointCount))
-	p.log.Info("avgResult: ", avgResult)
+	// 平均连接数/节点数，参考值
+	averageVal := math.Floor(float64(avgConnCount) / float64(availableEndpointCount))
+	p.log.Info("conns per endpoint by average conn count: ", averageVal)
 
-	initResult := float64(p.connsPerEndpoint)
-	p.log.Info("initResult: ", initResult)
+	// 初始每节点连接数
+	initialVal := float64(p.connsPerEndpoint)
+	p.log.Info("conns per endpoint of initialization: ", initialVal)
 
-	result := avgResult
-
-	if curResult < initResult {
-		// 比初始的小，说明加节点了，只需要增加少量连接，取小的结果
-		result = math.Min(curResult, avgResult)
+	result := averageVal
+	if estimatedVal < initialVal {
+		// 评估值比初始值小，说明加节点了，新节点需要增加连接，原有节点需要减少连接，小步收敛，取评估值和平均值较小的结果
+		result = math.Min(estimatedVal, averageVal)
 	} else {
-		// 比初始的大，说明删节点了，需要增多加点连接，取大的结果
-		result = math.Max(initResult, avgResult)
+		// 评估值比初始值大，说明删节点了，被删节点需要删连接，剩余节点需要增加连接，小步收敛，取初始值和平均值较小的结果
+		result = math.Max(initialVal, averageVal)
 	}
 
 	// 保底1个
@@ -641,7 +645,7 @@ func (p *connPool) rebalance() {
 					p.put(conn, nil, true)
 					rebalanced = true
 				} else {
-					p.log.Warn("failed to add connection during rebalance, addr: ", addr, ", err: ", err)
+					p.log.Warn("failed to add connection during rebalancing, addr: ", addr, ", err: ", err)
 					break
 				}
 			}
@@ -665,7 +669,7 @@ func (p *connPool) rebalance() {
 				p.put(conn, nil, true)
 				rebalanced = true
 			} else {
-				p.log.Warn("failed to add connection during rebalance, addr: ", addr, ", err: ", err)
+				p.log.Warn("failed to add connection during rebalancing, addr: ", addr, ", err: ", err)
 				break
 			}
 		}
