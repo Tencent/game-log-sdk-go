@@ -168,7 +168,7 @@ func main() {
 		callback := func(msg tglog.Message, err error) {
 			if err != nil {
 				failed.Add(1)
-				// fmt.Println(err)
+				fmt.Println(err)
 			} else {
 				success.Add(1)
 			}
