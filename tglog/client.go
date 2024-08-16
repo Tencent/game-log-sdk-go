@@ -276,7 +276,7 @@ func (c *client) initWorkers() error {
 }
 
 func (c *client) Dial(addr string) (gnet.Conn, error) {
-	if c.options.isTCP || c.options.NoUDPProbe {
+	if c.options.isTCP || !c.options.UDPProbe {
 		return c.netClient.Dial(c.options.Network, addr)
 	}
 
