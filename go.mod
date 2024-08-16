@@ -13,7 +13,7 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/panjf2000/gnet/v2 v2.5.7
-	github.com/prometheus/client_golang v1.19.1
+	github.com/prometheus/client_golang v1.20.0
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
 	go.uber.org/atomic v1.11.0
 	go.uber.org/zap v1.27.0
@@ -32,7 +32,7 @@ require (
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/sync v0.7.0 // indirect
-	golang.org/x/sys v0.22.0 // indirect
+	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sys v0.24.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
