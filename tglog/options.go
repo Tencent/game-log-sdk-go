@@ -45,8 +45,8 @@ type Options struct {
 	AppID                   string                // 业务ID，V3协议有效，默认：空，开启鉴权时必填
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
-	SendTimeout             time.Duration         // 发送超时，V3协议有效，默认：30000ms
-	MaxRetries              int                   // 重试次数，V3协议有效，默认1，
+	SendTimeout             time.Duration         // 发送超时，默认：30000ms
+	MaxRetries              int                   // 重试次数，默认3，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
 	EncryptKey              string                // 加密密钥，V3协议有效，如果是16/24/32字节的字符串，直接使用，否则会用base64标准编码格式解码后再使用，解码失败将无法使用，默认：无，开启加密/鉴权/签名时必填
@@ -180,7 +180,7 @@ func (options *Options) ValidateAndSetDefault() error {
 	}
 
 	if options.MaxRetries <= 0 {
-		options.MaxRetries = 1
+		options.MaxRetries = 3
 	}
 
 	if options.NoFrameHeader && options.isV3 {
