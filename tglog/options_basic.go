@@ -228,32 +228,3 @@ func WithMetricsRegistry(reg prometheus.Registerer) Option {
 		o.MetricsRegistry = reg
 	}
 }
-
-// WithNoUDPProbe disables UDPProbe
-// Deprecated: UDPProbe is disabled by default, if you want to enable it, use WithUDPProbe instead.
-func WithNoUDPProbe(no bool) Option {
-	return func(o *Options) {
-		o.UDPProbe = !no
-	}
-}
-
-// WithUDPProbe sets UDPProbe
-func WithUDPProbe() Option {
-	return func(o *Options) {
-		o.UDPProbe = true
-	}
-}
-
-// WithUDPProbeDialTimeout sets UDPProbeDialTimeout
-func WithUDPProbeDialTimeout(to time.Duration) Option {
-	return func(o *Options) {
-		o.UDPProbeDialTimeout = to
-	}
-}
-
-// WithUDPProbeRequestTimeout sets UDPProbeRequestTimeout
-func WithUDPProbeRequestTimeout(to time.Duration) Option {
-	return func(o *Options) {
-		o.UDPProbeRequestTimeout = to
-	}
-}

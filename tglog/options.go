@@ -62,9 +62,6 @@ type Options struct {
 	TokenType               string                // 鉴权令牌类型，V3协议有效，默认：无，可选值：bearer/tglog，bearer为JWT，tglog为tglog实现的一种token
 	Auth                    bool                  // 是否携带鉴权参数，默认：false
 	Sign                    bool                  // 是否签名，V3协议有效，默认：false
-	UDPProbe                bool                  // 启用UDP探活，我们将用connected UDP方法进行UDP服务探活，避免初始化时往未启动的服务器发送数据以及运行时故障服务器恢复探测，这有可能会降低SDK的启动速度
-	UDPProbeDialTimeout     time.Duration         // UDP探活连接超时，默认：100ms
-	UDPProbeRequestTimeout  time.Duration         // UDP探活请求超时，默认：100ms
 }
 
 // ValidateAndSetDefault validates an options and set up the default values
@@ -208,14 +205,6 @@ func (options *Options) ValidateAndSetDefault() error {
 
 	if options.MaxFrameLen <= 0 {
 		options.MaxFrameLen = 64 * 1024
-	}
-
-	if options.UDPProbeDialTimeout <= 0 {
-		options.UDPProbeDialTimeout = 100 * time.Millisecond
-	}
-
-	if options.UDPProbeRequestTimeout <= 0 {
-		options.UDPProbeRequestTimeout = 100 * time.Millisecond
 	}
 
 	return nil

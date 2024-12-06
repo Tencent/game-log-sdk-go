@@ -16,7 +16,6 @@ import (
 	"git.woa.com/tglog/v3/sdk-go/discoverer"
 	"git.woa.com/tglog/v3/sdk-go/framer"
 	"git.woa.com/tglog/v3/sdk-go/logger"
-	"git.woa.com/tglog/v3/sdk-go/udp"
 )
 
 const (
@@ -276,15 +275,6 @@ func (c *client) initWorkers() error {
 }
 
 func (c *client) Dial(addr string) (gnet.Conn, error) {
-	if c.options.isTCP || !c.options.UDPProbe {
-		return c.netClient.Dial(c.options.Network, addr)
-	}
-
-	err := udp.Probe(addr, []byte("\n"), c.options.UDPProbeDialTimeout, c.options.UDPProbeRequestTimeout)
-	if err != nil {
-		return nil, err
-	}
-
 	return c.netClient.Dial(c.options.Network, addr)
 }
 
