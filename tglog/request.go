@@ -71,8 +71,9 @@ func (r *sendDataReq) done(err error, errCode string) {
 		r.metrics = nil
 	}
 	if r.pool != nil {
-		r.pool.Put(r)
+		pool := r.pool
 		r.pool = nil
+		pool.Put(r)
 	}
 }
 
@@ -127,8 +128,9 @@ func (b *batchReq) done(err error) {
 		b.metrics = nil
 	}
 	if b.pool != nil {
-		b.pool.Put(b)
+		pool := b.pool
 		b.pool = nil
+		pool.Put(b)
 	}
 }
 

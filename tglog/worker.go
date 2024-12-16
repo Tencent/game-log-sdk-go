@@ -120,7 +120,7 @@ type worker struct {
 	metrics            *metrics                 // 指标
 	bufferPool         bufferpool.BufferPool    // 缓冲池
 	bytePool           bufferpool.BytePool      // 内存池
-	stop               bool                     // 是否停止
+	stop               chan struct{}            // 是否停止
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -152,6 +152,7 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		bufferPool:         opts.BufferPool,
 		bytePool:           opts.BytePool,
 		log:                opts.Logger,
+		stop:               make(chan struct{}),
 	}
 
 	// V1协议没有响应，不需要这些定时器
@@ -193,8 +194,10 @@ func (w *worker) start() {
 			}
 		}()
 
-		for !w.stop {
+		for {
 			select {
+			case <-w.stop:
+				return
 			case req, ok := <-w.cmdChan:
 				if !ok {
 					continue
@@ -730,7 +733,7 @@ func (w *worker) close() {
 
 	// 等待close完成
 	<-req.doneCh
-	w.stop = true
+	close(w.stop)
 }
 
 func (w *worker) handleClose(req *closeReq) {
