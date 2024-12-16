@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofrs/uuid"
+	"github.com/google/uuid"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
@@ -216,7 +216,7 @@ type sendFailedBatchReq struct {
 }
 
 func buildBatchID(index string) string {
-	u, err := uuid.NewV4()
+	u, err := uuid.NewRandom()
 	if err != nil {
 		return index + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	}
