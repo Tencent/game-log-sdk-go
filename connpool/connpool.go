@@ -251,7 +251,7 @@ func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
 
 	addr := remoteAddr.String()
 	if _, ok := p.endpointMap.Load(addr); !ok {
-		p.log.Info("endpoint deleted, close its connection, addr:", addr)
+		p.log.Warn("endpoint deleted, close its connection, addr:", addr)
 		CloseConn(conn, defaultConnCloseDelay)
 		return
 	}
@@ -333,7 +333,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 
 	if len(delEndpoints) > 0 {
 		// delete connections for deleted endpoints
-		p.log.Info("delete old connections...")
+		p.log.Debug("delete old connections...")
 
 		// 使用临时切片存储从 connChan 中取出的连接
 		tempConns := make([]gnet.Conn, 0, cap(p.connChan))
@@ -350,7 +350,7 @@ func (p *connPool) UpdateEndpoints(all, add, del []string) {
 
 				addr := remoteAddr.String()
 				if _, ok := delEndpoints[addr]; ok {
-					p.log.Info("endpoint deleted, close its connection, addr:", addr)
+					p.log.Warn("endpoint deleted, close its connection, addr:", addr)
 					CloseConn(conn, defaultConnCloseDelay)
 					// 对于已下线的节点，我们提前扣减其连接数，这样在重新平衡时就可以避免创建过多的连接
 					p.decEndpointConnCount(addr)
@@ -449,7 +449,7 @@ loop:
 }
 
 func (p *connPool) markUnavailable(ep string) {
-	p.log.Info("endpoint cannot be connected, marking as unavailable, addr: ", ep)
+	p.log.Debug("endpoint cannot be connected, marking as unavailable, addr: ", ep)
 	p.unavailable.Store(ep, time.Now())
 	p.retryCounts.Store(ep, 0)
 }
@@ -485,27 +485,28 @@ func (p *connPool) recoverAndRebalance() {
 }
 
 func (p *connPool) dump() {
-	p.log.Info("all endpoints:")
+	p.log.Debug("all endpoints:")
 	eps := p.endpoints.Load()
 	endpoints, ok := eps.([]string)
 	if ok {
 		for _, ep := range endpoints {
-			p.log.Info(ep)
+			p.log.Debug(ep)
 		}
 	}
 
 	dump := false
 	p.unavailable.Range(func(key, value any) bool {
 		if !dump {
-			p.log.Info("unavailable endpoints:")
+			p.log.Debug("unavailable endpoints:")
+			dump = true
 		}
-		p.log.Info(key)
+		p.log.Debug(key)
 		return true
 	})
 
-	p.log.Info("opened connections:")
+	p.log.Debug("opened connections:")
 	p.endpointConnCounts.Range(func(key, value any) bool {
-		p.log.Info("endpoint: ", key, ", conns: ", value.(int))
+		p.log.Debug("endpoint: ", key, ", conns: ", value.(int))
 		return true
 	})
 }
@@ -522,7 +523,7 @@ func (p *connPool) recover() bool {
 			// 尝试创建新连接
 			conn, err := p.dialer.Dial(key.(string))
 			if err == nil {
-				p.log.Info("endpoint recovered, addr: ", key)
+				p.log.Debug("endpoint recovered, addr: ", key)
 				p.put(conn, nil, true)
 				p.unavailable.Delete(key)
 				p.retryCounts.Delete(key)
@@ -537,7 +538,7 @@ func (p *connPool) recover() bool {
 		return true
 	})
 	if recovered {
-		p.log.Info("recover triggered")
+		p.log.Debug("recover triggered")
 	}
 	return recovered
 }
@@ -571,40 +572,40 @@ func (p *connPool) getAvailableEndpointCount() int {
 func (p *connPool) getExpectedConnPerEndpoint() int {
 	// 当前连接数，我们的连接是延迟关闭了，获取的连接数可能包含这些关闭中的无效的连接，且一般会大于等于初始连接数
 	curConnCount := p.getConnCount()
-	p.log.Info("curConnCount: ", curConnCount)
+	p.log.Debug("curConnCount: ", curConnCount)
 	if curConnCount <= 0 {
 		return 1
 	}
 
 	// 初始连接数
 	initConnCount := float64(p.requiredConnNum)
-	p.log.Info("initConnCount: ", initConnCount)
+	p.log.Debug("initConnCount: ", initConnCount)
 
 	// 平均连接数，因为计算当前连接数时，包括了延迟关闭但没完全关闭的连接，有可能不准确，用初始连接数和当前连接数的平均值当作参考
 	avgConnCount := (curConnCount + p.requiredConnNum) >> 1
-	p.log.Info("avgConnCount: ", avgConnCount)
+	p.log.Debug("avgConnCount: ", avgConnCount)
 	if avgConnCount <= 0 {
 		return 1
 	}
 
 	// 当前可用节点数
 	availableEndpointCount := p.getAvailableEndpointCount()
-	p.log.Info("availableEndpointCount: ", availableEndpointCount)
+	p.log.Debug("availableEndpointCount: ", availableEndpointCount)
 	if availableEndpointCount <= 0 {
 		return 1
 	}
 
 	// 当前连接数/节点数，算一个新的每节点连接数，向下取整，避免过大
 	estimatedVal := math.Floor(float64(curConnCount) / float64(availableEndpointCount))
-	p.log.Info("conns per endpoint by current conn count: ", estimatedVal)
+	p.log.Debug("conns per endpoint by current conn count: ", estimatedVal)
 
 	// 平均连接数/节点数，参考值
 	averageVal := math.Floor(float64(avgConnCount) / float64(availableEndpointCount))
-	p.log.Info("conns per endpoint by average conn count: ", averageVal)
+	p.log.Debug("conns per endpoint by average conn count: ", averageVal)
 
 	// 初始每节点连接数
 	initialVal := float64(p.connsPerEndpoint)
-	p.log.Info("conns per endpoint of initialization: ", initialVal)
+	p.log.Debug("conns per endpoint of initialization: ", initialVal)
 
 	result := averageVal
 	if estimatedVal < initialVal {
@@ -617,7 +618,7 @@ func (p *connPool) getExpectedConnPerEndpoint() int {
 
 	// 保底1个
 	result = math.Max(1, result)
-	p.log.Info("expectedConnPerEndpoint: ", result)
+	p.log.Debug("expectedConnPerEndpoint: ", result)
 	return int(result)
 }
 
@@ -641,7 +642,7 @@ func (p *connPool) rebalance() {
 			for i := currentCount; i < expectedConnPerEndpoint; i++ {
 				conn, err := p.dialNewConn(addr)
 				if err == nil {
-					p.log.Info("adding connection for addr: ", addr)
+					p.log.Debug("adding connection for addr: ", addr)
 					p.put(conn, nil, true)
 					rebalanced = true
 				} else {
@@ -665,7 +666,7 @@ func (p *connPool) rebalance() {
 		for i := 0; i < expectedConnPerEndpoint; i++ {
 			conn, err := p.dialNewConn(addr)
 			if err == nil {
-				p.log.Info("adding connection for addr: ", addr)
+				p.log.Debug("adding connection for addr: ", addr)
 				p.put(conn, nil, true)
 				rebalanced = true
 			} else {
@@ -677,7 +678,7 @@ func (p *connPool) rebalance() {
 	})
 
 	if rebalanced {
-		p.log.Info("rebalance triggered")
+		p.log.Debug("rebalance triggered")
 	}
 }
 
