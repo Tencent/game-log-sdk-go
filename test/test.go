@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap/zapcore"
 
 	"github.com/juju/ratelimit"
@@ -37,6 +38,7 @@ var (
 	encryptKey string
 	appID      string
 	perf       bool
+	metrics    bool
 )
 
 func randMsg(msgs []tglog.Message) tglog.Message {
@@ -66,6 +68,7 @@ func main() {
 	flag.StringVar(&encryptKey, "encrypt-key", "0123456789ABCDEF", "encrypt key")
 	flag.StringVar(&appID, "app-id", "test", "app ID")
 	flag.BoolVar(&perf, "perf", false, "enable perf or not")
+	flag.BoolVar(&metrics, "metrics", false, "enable metrics or not")
 	flag.Parse()
 
 	var client tglog.Client
@@ -140,8 +143,11 @@ func main() {
 	}
 
 	// perf
-	if perf {
+	if perf || metrics {
 		go func() {
+			if metrics {
+				http.Handle("/metrics", promhttp.Handler())
+			}
 			fmt.Println(http.ListenAndServe(":6060", nil))
 		}()
 	}
@@ -209,9 +215,9 @@ func main() {
 	fmt.Println("success:", success.Load())
 	fmt.Println("failed:", failed.Load())
 	time.Sleep(3 * time.Second)
-	if perf {
-		select {}
-	}
 
 	client.Close()
+	if perf || metrics {
+		select {}
+	}
 }
