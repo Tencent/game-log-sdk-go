@@ -228,3 +228,10 @@ func WithMetricsRegistry(reg prometheus.Registerer) Option {
 		o.MetricsRegistry = reg
 	}
 }
+
+// WithMaxConnLifetime sets MaxConnLifetime
+func WithMaxConnLifetime(lifetime time.Duration) Option {
+	return func(o *Options) {
+		o.MaxConnLifetime = lifetime
+	}
+}

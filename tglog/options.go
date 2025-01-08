@@ -38,6 +38,9 @@ type Options struct {
 	Logger                  logger.Logger         // 调试日志，默认：控制台
 	MetricsName             string                // metrics唯一名称，用于隔离指标，默认：tglog-go，如果一个进程创建了多个client对象需要配置不同的名字，否则指标名冲突会导致进程异常
 	MetricsRegistry         prometheus.Registerer // 指标存储器，默认：prometheus.DefaultRegisterer
+	SendTimeout             time.Duration         // 发送超时，默认：30000ms
+	MaxRetries              int                   // 重试次数，默认3，
+	MaxConnLifetime         time.Duration         // 连接最大生命周期，默认：5m，设置为负数时将使用长连接，服务器直接挂到DNS上才建议使用长连接，否则（如挂在CLB上）会导致不均衡，服务器升级要替换DNS下的CLB才能保证不丢数据
 	isV1                    bool                  // 是否V1协议，内部使用
 	isV3                    bool                  // 是否V3协议，内部使用
 	isUDP                   bool                  // 是否UDP，内部使用
@@ -45,8 +48,6 @@ type Options struct {
 	AppID                   string                // 业务ID，V3协议有效，默认：空，开启鉴权时必填
 	AppName                 string                // 业务名称，暂时没什么用途，V3协议有效，默认：空
 	AppVer                  string                // 业务版本号，暂时没什么用途，V3协议有效，默认：空
-	SendTimeout             time.Duration         // 发送超时，默认：30000ms
-	MaxRetries              int                   // 重试次数，默认3，
 	Compress                bool                  // 是否压缩，V3协议有效，默认：false
 	Encrypt                 bool                  // 是否加密，V3协议有效，默认：false
 	EncryptKey              string                // 加密密钥，V3协议有效，如果是16/24/32字节的字符串，直接使用，否则会用base64标准编码格式解码后再使用，解码失败将无法使用，默认：无，开启加密/鉴权/签名时必填
@@ -178,6 +179,10 @@ func (options *Options) ValidateAndSetDefault() error {
 
 	if options.MaxRetries <= 0 {
 		options.MaxRetries = 3
+	}
+
+	if options.MaxConnLifetime == 0 {
+		options.MaxConnLifetime = 5 * time.Minute
 	}
 
 	if options.NoFrameHeader && options.isV3 {

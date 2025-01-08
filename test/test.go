@@ -21,24 +21,25 @@ import (
 )
 
 var (
-	network    string
-	host       string
-	port       int
-	version    string
-	rate       float64
-	sync       bool
-	sendNum    int
-	file       string
-	token      string
-	tokenType  string
-	auth       bool
-	sign       bool
-	compress   bool
-	encrypt    bool
-	encryptKey string
-	appID      string
-	perf       bool
-	metrics    bool
+	network      string
+	host         string
+	port         int
+	version      string
+	rate         float64
+	sync         bool
+	sendNum      int
+	file         string
+	token        string
+	tokenType    string
+	auth         bool
+	sign         bool
+	compress     bool
+	encrypt      bool
+	encryptKey   string
+	appID        string
+	perf         bool
+	metrics      bool
+	connLifetime int
 )
 
 func randMsg(msgs []tglog.Message) tglog.Message {
@@ -69,6 +70,7 @@ func main() {
 	flag.StringVar(&appID, "app-id", "test", "app ID")
 	flag.BoolVar(&perf, "perf", false, "enable perf or not")
 	flag.BoolVar(&metrics, "metrics", false, "enable metrics or not")
+	flag.IntVar(&connLifetime, "conn-life", 0, "max conn lifetime")
 	flag.Parse()
 
 	var client tglog.Client
@@ -106,6 +108,7 @@ func main() {
 			tglog.WithAppID(appID),
 			tglog.WithBufferPoolSize(4096),
 			tglog.WithBytePoolSize(4096),
+			tglog.WithMaxConnLifetime(time.Duration(connLifetime)*time.Minute),
 		)
 	} else {
 		client, err = tglog.NewV1Client(
@@ -122,7 +125,7 @@ func main() {
 			tglog.WithBatchingMaxMessages(20),
 			tglog.WithBatchingMaxSize(10*1024),
 			tglog.WithMaxRetries(3),
-			// tglog.WithNoUDPProbe(true),
+			tglog.WithMaxConnLifetime(time.Duration(connLifetime)*time.Minute),
 		)
 	}
 	if err != nil {

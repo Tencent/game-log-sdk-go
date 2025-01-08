@@ -222,7 +222,7 @@ func (c *client) initConns() error {
 
 	// minimum connection number per endpoint is 1
 	connsPerEndpoint := int(math.Ceil(float64(c.options.WorkerNum) * 1.2 / float64(epLen)))
-	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 512, c, c.log)
+	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 512, c, c.log, c.options.MaxConnLifetime)
 	if err != nil {
 		return err
 	}
@@ -274,8 +274,8 @@ func (c *client) initWorkers() error {
 	return nil
 }
 
-func (c *client) Dial(addr string) (gnet.Conn, error) {
-	return c.netClient.Dial(c.options.Network, addr)
+func (c *client) Dial(addr string, ctx any) (gnet.Conn, error) {
+	return c.netClient.DialContext(c.options.Network, addr, ctx)
 }
 
 func (c *client) Send(ctx context.Context, msg Message) error {
