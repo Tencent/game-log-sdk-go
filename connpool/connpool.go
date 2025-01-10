@@ -754,7 +754,7 @@ func (p *connPool) getExpectedConnPerEndpoint() int {
 	initialVal := float64(p.connsPerEndpoint)
 	p.log.Debug("conns per endpoint of initialization: ", initialVal)
 
-	result := averageVal
+	result := averageVal //nolint:ineffassign
 	if estimatedVal < initialVal {
 		// 评估值比初始值小，说明加节点了，新节点需要增加连接，原有节点需要减少连接，小步收敛，取评估值和平均值较小的结果
 		result = math.Min(estimatedVal, averageVal)

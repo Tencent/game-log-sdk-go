@@ -857,7 +857,7 @@ func (w *worker) updateConn(old gnet.Conn, err error) {
 		// 切换成功且没有错误才放回池子里
 		if err == nil {
 			w.client.putConn(oldConn, err)
-		} else {
+		} else { //nolint:staticcheck
 			// 有错误的，一般是对端关闭，gnet会调用OnClose()把连接从池子里删除，这里不放回池里问题也不大
 		}
 		w.metrics.incUpdateConn(getErrorCode(err))
