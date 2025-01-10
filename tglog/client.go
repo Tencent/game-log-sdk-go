@@ -236,7 +236,7 @@ func (c *client) initFramer() error {
 		return nil
 	}
 
-	framer, err := framer.NewLengthField(framer.LengthFieldCfg{
+	fr, err := framer.NewLengthField(framer.LengthFieldCfg{
 		MaxFrameLen:  c.options.MaxFrameLen,
 		FieldOffset:  c.options.LenFieldOffset,
 		FieldLength:  c.options.LenFieldLength,
@@ -247,7 +247,7 @@ func (c *client) initFramer() error {
 		return err
 	}
 
-	c.framer = framer
+	c.framer = fr
 	return nil
 }
 
