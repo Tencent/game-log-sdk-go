@@ -7,6 +7,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	v3 "git.woa.com/tglog/v3/proto/pbgo"
 
@@ -193,7 +194,8 @@ func (c *client) initNetClient() error {
 		gnet.WithWriteBufferCap(c.options.WriteBufferSize),
 		gnet.WithReadBufferCap(c.options.ReadBufferSize),
 		gnet.WithSocketSendBuffer(c.options.SocketSendBufferSize),
-		gnet.WithSocketRecvBuffer(c.options.SocketRecvBufferSize))
+		gnet.WithSocketRecvBuffer(c.options.SocketRecvBufferSize),
+		gnet.WithTCPKeepAlive(5*time.Minute))
 	if err != nil {
 		return err
 	}
