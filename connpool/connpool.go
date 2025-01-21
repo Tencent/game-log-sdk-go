@@ -556,6 +556,8 @@ func (p *connPool) recoverAndRebalance() {
 				default:
 					time.Sleep(time.Second)
 				}
+			} else {
+				time.Sleep(time.Second)
 			}
 		}
 	}
