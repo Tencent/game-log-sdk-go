@@ -219,8 +219,8 @@ func main() {
 	fmt.Println("failed:", failed.Load())
 	time.Sleep(3 * time.Second)
 
-	client.Close()
 	if perf || metrics {
 		select {}
 	}
+	client.Close()
 }
