@@ -14,12 +14,9 @@ var (
 
 // init Initialize snowflake node.
 func init() {
-	ip, err := GetFirstPrivateIP()
+	ip, err := GetOneIP()
 	if err != nil {
-		ip, err = GetFirstIP()
-		if err != nil {
-			log.Fatal(err)
-		}
+		log.Fatal(err)
 	}
 
 	id := IPtoUInt(ip)

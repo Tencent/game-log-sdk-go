@@ -41,7 +41,7 @@ var (
 
 func init() {
 	var err error
-	localIP, err = util.GetFirstPrivateIP()
+	localIP, err = util.GetOneIP()
 	if err != nil {
 		localIP = "127.0.0.1"
 	}
