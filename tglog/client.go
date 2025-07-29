@@ -385,22 +385,47 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 	}
 
 	if c.options.isUDP {
-		frame, err := conn.Next(-1)
+		total := conn.InboundBuffered()
+		if total <= 0 {
+			return gnet.None
+		}
+
+		frame, err := conn.Peek(total)
 		if err != nil {
-			c.log.Error("read UDP response failed, err:", err)
+			c.metrics.incError(errConnReadFailed.getStrCode())
+			c.log.Error("read UDP response failed, close it, err:", err)
 			return gnet.Close
 		}
+
 		c.onResponse(frame)
+
+		_, err = conn.Discard(total)
+		if err != nil {
+			c.metrics.incError(errConnReadFailed.getStrCode())
+			c.log.Error("discard UDP response failed, close it, err:", err)
+			return gnet.Close
+		}
+
 		return gnet.None
 	}
 
 	for {
 		total := conn.InboundBuffered()
-		buf, _ := conn.Peek(total)
+		if total <= 0 {
+			return gnet.None
+		}
+
+		buf, err := conn.Peek(total)
+		if err != nil {
+			c.metrics.incError(errConnReadFailed.getStrCode())
+			c.log.Error("peek connection stream failed, close it, err:", err)
+			// 读失败，关闭连接
+			return gnet.Close
+		}
 
 		length, payloadOffset, payloadOffsetEnd, err := c.framer.ReadFrame(buf)
 		if errors.Is(err, framer.ErrIncompleteFrame) {
-			break
+			return gnet.None
 		}
 
 		if err != nil {
@@ -410,11 +435,10 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 			return gnet.Close
 		}
 
-		frame, _ := conn.Peek(length)
-		_, err = conn.Discard(length)
+		frame, err := conn.Peek(length)
 		if err != nil {
 			c.metrics.incError(errConnReadFailed.getStrCode())
-			c.log.Error("discard connection stream failed, err", err)
+			c.log.Error("peek connection stream failed, close it, err:", err)
 			// 读失败，关闭连接
 			return gnet.Close
 		}
@@ -422,8 +446,14 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		// 处理数据
 		c.onResponse(frame[payloadOffset:payloadOffsetEnd])
 
+		_, err = conn.Discard(length)
+		if err != nil {
+			c.metrics.incError(errConnReadFailed.getStrCode())
+			c.log.Error("discard connection stream failed, close it, err:", err)
+			// 读失败，关闭连接
+			return gnet.Close
+		}
 	}
-	return gnet.None
 }
 
 func (c *client) onResponse(frame []byte) {
