@@ -1,6 +1,6 @@
 # game-log-sdk-go
 
-English | [中文](./README.md)
+English | [中文](./README_CN.md)
 
 ## What is game-log-sdk-go?
 
