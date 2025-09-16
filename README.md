@@ -1,31 +1,28 @@
 # game-log-sdk-go
 
+English | [中文](./README_CN.md)
 
+## What is game-log-sdk-go?
 
-##  game-log-sdk-go是什么？
+game-log-sdk-go is the Go SDK for Tencent Game Log Service (TencentGameLog, or TGLog). It is responsible for reporting game logs to TGLog servers using specific protocols and formats.
 
-game-log-sdk-go是腾讯游戏日志服务（TencentGameLog，简称TGLog）的go语言版本SDK，它负责将游戏日志以特定的协议和格式上报到TGLog服务器。
+==**<font color=red>Important: Due to significant performance differences between synchronous and asynchronous interfaces, especially with V3 protocol, please use asynchronous interfaces.</font>**==
 
-==**<font color=red>重要说明：鉴于同步接口的性能比异步接口相差太多，特别是V3协议，请大家使用异步接口。</font>**==
+## Features
 
+- Domain-based backend RS refresh support
+- Synchronous reporting support
+- Batch asynchronous reporting support
+- TGLog V1 protocol compatibility
+- TGLog V3 protocol support
+- Compression and encryption support (V3 protocol)
+- Graceful shutdown support
 
-## 特性
+## Usage
 
-- 支持域名后端RS刷新；
-- 支持同步上报；
-- 支持批量异步上报；
-- 兼容TGLogV1协议；
-- 支持TGLogV3协议；
-- 支持压缩与加密（V3协议）；
-- 支持优雅关闭；
+For detailed examples, please refer to: tglog/example_test.go or test/test.go
 
-
-
-## 使用方法
-
-详细示例请参考：tglog/example_test.go或者：test/test.go。
-
-### 示例
+### Example
 
 ```go
 package tglog_test
@@ -91,85 +88,77 @@ func ExampleClient_SendAsync() {
 	fmt.Println("failed:", failed.Load())
 	client.Close()
 }
-
 ```
 
-### 配置项
+### Configuration Options
 
-参见：
+See:
+- tglog/options.go: All configuration options
+- tglog/options_basic.go: Basic configuration functions
+- tglog/options_v3.go: V3 protocol-related configuration functions
 
-- tglog/options.go：所有配置项；
-- tglog/options_basic.go：基础配置函数；
-- tglog/options_v3.go：V3协议相关配置函数。
+#### V3 Protocol Feature Configuration
 
-#### V3协议特性配置
-
-#### 开启压缩
-
+##### Enable Compression
 ```go
 WithCompress(true)
 ```
 
-##### 开启加密
-
+##### Enable Encryption
 ```go
 WithEncrypt(true)
 WithEncryptKey("1234567890abcdef")
 ```
 
-##### 开启鉴权
-
+##### Enable Authentication
 ```go
 WithToken("1234567890abcdef")
 WithTokenType("tglog")
 WithAuth(true)
 ```
+> Note: Authentication requires encryption to be enabled, otherwise the token will be exposed.
 
-> 说明：开启鉴权必须开启加密，否则token会泄漏。
-
-##### 开启签名
-
+##### Enable Signature
 ```go
 WithSign(true)
 ```
+> Note: Signature requires both encryption and authentication to be enabled, otherwise the token will be exposed and there will be no token available for signing.
 
-> 说明：开启签名必须开启加密和鉴权，否则token会泄漏，且没有可用于签名的token。
+### Version Selection
 
-### 版本选择
+- **V1 Version**: Data is sent in plain text without response. Suitable for intranet environments. Tencent Games typically use V1.
 
-- V1版本。数据以明文形式发送，没有响应；适用于内网环境，腾讯游戏通常选V1版本；
+- **V3 Version**: Data is encoded with ProtoBuffer before sending, with response support. Supports encryption, compression, authentication, and signature. Suitable for stricter network environments and special cases.
 
-- V3版本。数据会用ProtoBuffer编码后再发送，有响应，支持加密、压缩、鉴权、签名。适用于更严格的网络环境，特殊情况选用。
+### Send Mode Selection
 
-### 发送模式选择
+- **Synchronous Mode**: Sends one request, waits for response (if any), then sends the next request. No concurrency. Not recommended.
 
-- 同步模式。发送完一个请求，收到响应（如果有）再发下一个请求，无并发；不推荐选用；
-- 异步模式。发送完一个请求，可以继续发送一下个，响应（如果有）回来时，通过回调通知发送逻辑，支持并发。建议选用。
+- **Asynchronous Mode**: Can continue sending next request after sending one. Responses (if any) are notified through callbacks. Supports concurrency. Recommended.
 
-### 通信协议选择
+### Communication Protocol Selection
 
-- UDP。无连接、低延迟，适用于内网环境，腾讯游戏常用；
-- TCP。有连接，可靠，但延迟可能会更高，适用于更严格的网络环境，特殊情况选用。
+- **UDP**: Connectionless, low latency. Suitable for intranet environments. Commonly used by Tencent Games.
 
-### 其他
+- **TCP**: Connection-based, reliable, but potentially higher latency. Suitable for stricter network environments and special cases.
 
-- 压缩。只有V3版本支持，要求有配套的V3版本的服务器；
-- 加密。只有V3版本支持，要求有配套的V3版本的服务器，双方要配置相同的密钥；
-- 鉴权。只有V3版本支持，要求有配套的V3版本的服务器，开启鉴权需要同时开启加密，所以双方要配置相同的密钥，同时客户端需要配置鉴权token，服务器要配置鉴权密钥；
-- 签名。只有V3版本支持，要求有配套的V3版本的服务器，开启签名需要使用到鉴权token，所以需要同时开启鉴权和加密，所以双方要配置相同的密钥，同时客户端需要配置鉴权token，服务器要配置鉴权密钥。
+### Others
 
-## 性能
+- **Compression**: Only supported in V3, requires compatible V3 server.
+- **Encryption**: Only supported in V3, requires compatible V3 server with same encryption key configured on both sides.
+- **Authentication**: Only supported in V3, requires compatible V3 server. Enabling authentication requires encryption, so both sides need the same encryption key. Client needs authentication token, server needs authentication key.
+- **Signature**: Only supported in V3, requires compatible V3 server. Enabling signature uses authentication token, so requires both authentication and encryption. Both sides need the same encryption key, client needs authentication token, server needs authentication key.
 
-### 环境
+## Performance
 
-#### 硬件
+### Environment
 
-客户端：16C32G/tlinux4
+#### Hardware
 
-服务器：16C64G/tlinux2
+Client: 16C32G/tlinux4
+Server: 16C64G/tlinux2
 
-内核参数：
-
+Kernel parameters:
 ```shell
 echo "net.core.rmem_max=256000000" >> /etc/sysctl.conf
 echo "net.core.wmem_max=256000000" >> /etc/sysctl.conf
@@ -185,24 +174,22 @@ echo "net.core.somaxconn=4096" >> /etc/sysctl.conf
 sysctl -p
 ```
 
-#### 软件
+#### Software
 
-测试程序：test/test.go
+Test program: test/test.go
 
-配置：
+Configuration:
+- Worker count (send goroutines): 8
+- Single worker message buffer: 200,000 messages
+- Data volume: 1,000,000 messages
+- Single message size: 350B
+- Test token bucket rate limit: 500,000 QPS
+- Batch send log count: 20 messages
+- Single send log bytes: 10K
 
-- 工作者数量（发送协程）：8个；
-- 单工作者消息缓冲：200000条；
-- 数据发送量：1000,000条；
-- 单条数据大小：350B；
-- 测试令牌桶限速：500000QPS；
-- 单批发送日志条数：20条；
-- 单发送日志字节数：10K；
+### Data
 
-### 数据
-
-#### UDP/V1/同步
-
+#### UDP/V1/Synchronous
 ```shell
 ./test 
 {"level":"info","ts":1678101917.0138125,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -220,8 +207,7 @@ failed: 0
 {"level":"info","ts":1678101930.5279508,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
-#### TCP/V1/同步
-
+#### TCP/V1/Synchronous
 ```shell
 ./test -network tcp -port 20002
 {"level":"info","ts":1678102160.9546793,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -239,7 +225,7 @@ failed: 0
 {"level":"info","ts":1678102186.962323,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
-#### UDP/V1/异步
+#### UDP/V1/Asynchronous
 ```shell
 ./test -async
 {"level":"info","ts":1678102264.2002535,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -257,7 +243,7 @@ failed: 0
 {"level":"info","ts":1678102269.2219534,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
-#### TCP/V1/异步
+#### TCP/V1/Asynchronous
 ```shell
 ./test -network tcp -port 20002 -async
 {"level":"info","ts":1678102306.7442007,"caller":"discoverer/dns.go:170","msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -275,8 +261,7 @@ failed: 0
 {"level":"info","ts":1678102312.2622147,"caller":"tglog/client.go:342","msg":"client shutdown"}
 ```
 
-#### UDP/V3/同步
-
+#### UDP/V3/Synchronous
 ```shell
 ./test -port 20003 -version v3
 {"level":"info","ts":1690426441.4392853,"msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -294,8 +279,7 @@ failed: 0
 {"level":"info","ts":1690426603.9774907,"msg":"client shutdown"}
 ```
 
-
-#### TCP/V3/同步
+#### TCP/V3/Synchronous
 ```shell
 ./test -network tcp -port 20004 -version v3
 {"level":"info","ts":1690426637.2871974,"msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -313,7 +297,7 @@ failed: 0
 {"level":"info","ts":1690426805.3286662,"msg":"client shutdown"}
 ```
 
-#### UDP/V3/异步
+#### UDP/V3/Asynchronous
 ```shell
 ./test -port 20003 -version v3 -async
 {"level":"info","ts":1690426349.148999,"msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -331,7 +315,7 @@ failed: 0
 {"level":"info","ts":1690426354.661024,"msg":"client shutdown"}
 ```
 
-#### TCP/V3/异步
+#### TCP/V3/Asynchronous
 ```shell
 ./test -network tcp -port 20004 -version v3 -async
 {"level":"info","ts":1690426385.8851142,"msg":"update domain host list dev.tglog.com: 127.0.0.1"}
@@ -349,55 +333,39 @@ failed: 0
 {"level":"info","ts":1690426391.4043891,"msg":"client shutdown"}
 ```
 
-
-> 说明：
->
-> - 以上测试数据完整率100%；
-> - V1协议同步UDP与TCP性能相差大是因为gnet网络库对UDP和TCP的处理方式不一样，对于UDP，它立即调用sendTo()发送，对于TCP，它会构造一个异步的任务，将数据放入gnet内部队列，再由调度器调度直到最终写入内核，这个调度有个时间差；
-> - V3协议与V1协议的同步性能相差如此之大，是因为V3协议需要等待响应，收到响应才认为一个请求结束，才能发送一下个请求，而V1版本只管发送，不收响应，且V3需要进行PB编解码；
-
-
+> Notes:
+> - All test data shows 100% completion rate
+> - The performance difference between UDP and TCP in V1 synchronous mode is due to gnet network library's different handling: for UDP, it immediately calls sendTo(); for TCP, it constructs an asynchronous task, puts data into gnet's internal queue, then scheduled until written to kernel, which has a time delay.
+> - The large performance gap between V3 and V1 synchronous protocols is because V3 needs to wait for responses - a request is only considered complete after receiving a response, then the next can be sent. V1 only sends without waiting for responses, and V3 requires PB encoding/decoding.
 
 ## FAQ
 
-Q：什么是TGLog？
+**Q: What is TGLog?**
 
-A：TGLog是腾讯游戏日志服务。TGLog=Tencent Game Log。
+A: TGLog is Tencent Game Log Service. TGLog = Tencent Game Log.
 
+**Q: What is the TGLog log format?**
 
+A: TGLog logs use "|" to separate fields and "\n" to separate log entries. Format: logname|value1|value2|...|valueX\n
 
-Q：TGLog日志格式是什么样的？
+Example: login|2023-02-28 17:00:00|a|b|c|d\n. If logs contain "|" or "\n", they need to be escaped as "%7C" and "%0D".
 
-A：TGLog日志是一种以"|"分隔字段，以换行符"\n"分隔2条日志的文本，格式为：日志名|值1|值2|...|值x\n。
+**Q: What's the difference between TGLog V1 and V3 protocols?**
 
-如：login|2023-02-28 17:00:00|a|b|c|d\n。如果日志中有"|"或者"\n"，需要转义成""%7C"和"%0D"。
+A: V1 and V3 have the same log format but different application layer transport protocols. V1 transmits in plain text without response. V3 transmits in PB-encoded binary format, supports compression and encryption, has responses, suitable for stricter network environments. IEG games typically use V1 protocol.
 
+**Q: Should I use TCP or UDP?**
 
+A: IEG games typically use V1 protocol with UDP, mainly for historical reasons. The original IEG game server framework (tsf4g) was single-threaded, and for latency-sensitive games like MOBA and FPS, TCP reconnection and retransmission delays might affect user experience. However, for Go-based game development, GC latency impact should have been evaluated. For Go SDK users, UDP and TCP have the same concurrency model and latency, so TCP is recommended for data integrity. Please specify TCP protocol when applying for access.
 
-Q：TGLog V1协议和V3协议有什么区别？
+**Q: When to use synchronous vs asynchronous sending?**
 
-A：V1版本和V3版本的日志格式是一样的，只是应用层传输协议不一样，V1版本直接以明文形式传输，没有响应，V3版本以PB编码后的二进制形式传输，支持压缩、加密，有响应，适用于更严格的网络环境。IEG内的游戏业务通常使用V1协议UDP上报即可。
+A: Depends on business requirements. Generally, synchronous mode cannot be concurrent and blocks, with relatively lower performance, especially with V3 client due to waiting for responses (see performance data above). Asynchronous sending is recommended in such cases.
 
+**Q: Is the callback function required for asynchronous sending?**
 
+A: No, it's only needed when you care about the send result. Pass nil if you don't care.
 
-Q：该使用TCP还是UDP？
+**Q: Why does it print so much information to the screen when running?**
 
-A：IEG内的游戏通常使用V1协议UDP上报，主要考虑到历史原因，原先IEG内的游戏服务器框架（tsf4g）是单线程的，对延迟要求高的游戏类型，如MOBA、FPS类，TCP的重连、重传增加的延迟有可能影响业务体验。但是，我们认为，对于使用Go来开发业务，特别是游戏，应该是认真评估过GC（垃圾回收）增加的延迟对业务的影响的，所以对于使用Go SDK的业务来说，无论是UDP还是TCP，并发模型都是一样的，延迟也是一样的，所以为了数据完整性，建议使用TCP，申请接入的时候请指定TCP协议。
-
-
-
-Q：什么使用同步发送，什么时候使用异步发送？
-
-A：看业务需求，一般而言，同步无法并发且会阻塞，性能相对较低，特别是使用V3版本的Client时，因为需要等待响应，性能较差（参见上面性能数据），此时建议使用异步发送。
-
-
-
-Q：异步发送时回调函数是必须的吗？
-
-A：不是的，只有你需要关注发送结果时才需要传入回调函数，如果不关心，传入nil即可。
-
-
-
-Q：为什么运行的时候会打印很多信息到屏幕上？
-
-A：因为SDKl默认的调试日志是打印到屏幕上的，出现这种情况一般是使用者没有注册外部的日志接口进来，可以调用WithLogger()函数注册一个应用自己的日志接口进来，logrus或者zap的sugar日志对象都可以。
+A: The SDK's default debug logs print to screen. This usually happens when users haven't registered an external logging interface. You can call WithLogger() to register your application's logging interface. Both logrus and zap sugar logging objects work.
