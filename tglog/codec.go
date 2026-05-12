@@ -82,9 +82,7 @@ func EncodeV1(messages []Message, bb *bytes.Buffer) ([]byte, error) {
 }
 
 func nextSeq() uint64 {
-	seq := sequence.Load()
-	sequence.Add(1)
-	return seq
+	return sequence.Add(1) - 1
 }
 
 // BuildV3HeartbeatReq builds a TGLog v3 heartbeat request
