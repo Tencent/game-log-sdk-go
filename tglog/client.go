@@ -239,6 +239,7 @@ func (c *client) initFramer() error {
 	}
 
 	fr, err := framer.NewLengthField(framer.LengthFieldCfg{
+		LittleEndian: c.options.LittleEndian,
 		MaxFrameLen:  c.options.MaxFrameLen,
 		FieldOffset:  c.options.LenFieldOffset,
 		FieldLength:  c.options.LenFieldLength,

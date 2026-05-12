@@ -206,7 +206,7 @@ func (b *batchReq) encode() ([]byte, error) {
 			b.options.Sign,
 			b.options.EncryptKey,
 			b.buffer,
-			false)
+			b.options.LittleEndian)
 	}
 
 	return b.buffer.Bytes(), nil

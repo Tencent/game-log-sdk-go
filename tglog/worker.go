@@ -649,7 +649,7 @@ func (w *worker) handleSendHeartbeat() {
 	}
 
 	bb := w.bufferPool.Get()
-	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, false, "", bb, false)
+	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, false, "", bb, w.options.LittleEndian)
 	if err != nil {
 		return
 	}
