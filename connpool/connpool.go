@@ -2,7 +2,6 @@
 package connpool
 
 import (
-	"context"
 	"errors"
 	"math"
 	"runtime/debug"
@@ -18,6 +17,7 @@ import (
 
 const (
 	defaultConnCloseDelay = 2 * time.Minute
+	defaultCmdChanSize    = 4096
 )
 
 // error variables
@@ -26,12 +26,12 @@ var (
 	ErrDialerIsNil         = errors.New("dialer is nil")
 	ErrLoggerIsNil         = errors.New("logger is nil")
 	ErrNoAvailableEndpoint = errors.New("no available server endpoint")
+	ErrPoolClosed          = errors.New("connection pool is closed")
 )
 
 // Dialer is the interface of a dialer that return a NetConn
 type Dialer interface {
-	// Dial dials to the addr and bind ctx to the returned connection, which network(TCP/UDP) to use is determined by the
-	// Dialer.
+	// Dial dials to the addr and bind ctx to the returned connection, which network(TCP/UDP) to use is determined by the Dialer
 	// Dial should use gnet.Client.DialContext() to get a connection that can be driven by a gnet event engine.
 	Dial(addr string, ctx any) (gnet.Conn, error)
 }
@@ -49,33 +49,60 @@ type ConnContext struct {
 // Best practice:
 // gnet is a high-performance networking package, the best way to use this pool is:
 //  1. call Get() to get a gnet.Conn;
-//  2. use the conn to read/write for a duration, 1m, for example, and then put the conn back to the pool and get a new
-//     one for load balancing, avoid putting/getting frequently;
-//  3. do not switch(put and get) to a new conn in the callback of gnet.Conn.AsyncWrite([]byte, AsyncCallback) or
-//     gnet.Conn.AsyncWritev([][]byte, AsyncCallback), it may be blocked;
-//  4. if you use TCP conn and can not update endpoints by service discovery directly, for example, your endpoints are
-//     behind at the back of a LB, it is better to set a max lifetime for your pool, so that you can restart your
-//     endpoints(RS) without data lost by:
+//  2. use the conn to read/write for a duration, 1m, for example, and then put the conn back to the pool and get a new one for load balancing, avoid putting/getting frequently;
+//  3. do not switch(put and get) to a new conn in the callback of gnet.Conn.AsyncWrite(buf []byte, callback AsyncCallback) or gnet.Conn.AsyncWritev(bs [][]byte, callback AsyncCallback), it may be blocked;
+//  4. if you use TCP conn and can not update endpoints by service discovery directly, for example, your endpoints are behind at the back of a LB, it is better to set a max lifetime
+//     for your pool, so that you can restart your endpoints(RS) without data lost by:
 //     1). set the weight of your endpoint(RS) to 0, so that no new connection incoming;
 //     2). wait for the existing connections to close by lifetime timeout;
 //     3). restart your endpoint.
 type EndpointRestrictedConnPool interface {
-	// Get gets a connection, it's concurrency-safe, but you can not call it in the callback of gnet.Conn.AsyncWrite()
-	// or gnet.Conn.AsyncWritev().
+	// Get gets a connection, it's concurrency-safe, but you can not call it in the callback of gnet.Conn.AsyncWrite() or gnet.Conn.AsyncWritev().
 	Get() (gnet.Conn, error)
-	// Put puts a connection back to the pool, if err is not nil, the connection will be closed by the pool, it's
-	// concurrency-safe, but you can not call it in the callback of gnet.Conn.AsyncWrite() or gnet.Conn.AsyncWritev().
+	// Put puts a connection back to the pool, if err is not nil, the connection will be closed by the pool, it's concurrency-safe,
+	// but you can not call it in the callback of gnet.Conn.AsyncWrite() or gnet.Conn.AsyncWritev().
 	Put(conn gnet.Conn, err error)
-	// UpdateEndpoints updates the endpoints the pool to dial to, it's not concurrency-safe.
+	// UpdateEndpoints updates the endpoints the pool to dial to, it's concurrency-safe.
 	UpdateEndpoints(all, add, del []string)
-	// NumPooled returns the connection number in the pool, not the number of all the connection that the pool created,
-	// it's concurrency-safe.
+	// NumPooled returns the connection number in the pool, not the number of all the connection that the pool created, it's concurrency-safe.
 	NumPooled() int
-	// OnConnClosed used to notify that a connection is closed, the connection will be removed from the pool, if err is
-	// not nil, the remote endpoint will mark as unavailable, it's concurrency-safe.
+	// OnConnClosed used to notify that a connection is closed, the connection will be removed from the pool, if err is not nil, the remote endpoint will mark as unavailable, it's concurrency-safe.
 	OnConnClosed(conn gnet.Conn, err error)
 	// Close closes the pool
 	Close()
+}
+
+type poolCmdKind int
+
+const (
+	poolCmdGet poolCmdKind = iota
+	poolCmdPut
+	poolCmdUpdateEndpoints
+	poolCmdConnClosed
+	poolCmdDialResult
+	poolCmdNumPooled
+	poolCmdClose
+)
+
+type poolCmd struct {
+	kind poolCmdKind
+
+	conn gnet.Conn
+	err  error
+	addr string
+
+	all []string
+	add []string
+	del []string
+
+	getReply chan getResult
+	intReply chan int
+	done     chan struct{}
+}
+
+type getResult struct {
+	conn gnet.Conn
+	err  error
 }
 
 // NewConnPool news a EndpointRestrictedConnPool
@@ -102,12 +129,17 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 		size = int(math.Max(1024, float64(requiredConnNum)))
 	}
 
-	// copy endpoints
 	endpoints := make([]string, 0, len(initEndpoints))
 	endpoints = append(endpoints, initEndpoints...)
+	endpointMap := make(map[string]struct{}, len(endpoints))
+	for _, e := range endpoints {
+		endpointMap[e] = struct{}{}
+	}
 
 	pool := &connPool{
-		connChan:         make(chan gnet.Conn, size),
+		cmdCh:            make(chan poolCmd, defaultCmdChanSize),
+		closeDone:        make(chan struct{}),
+		size:             size,
 		connsPerEndpoint: connsPerEndpoint,
 		requiredConnNum:  requiredConnNum,
 		dialer:           dialer,
@@ -118,45 +150,586 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 			Multiplier:      2,
 			Randomization:   0.5,
 		},
-		closeCh:         make(chan struct{}),
-		maxConnLifetime: maxConnLifetime,
+		maxConnLifetime:    maxConnLifetime,
+		idleConns:          make([]gnet.Conn, 0, size),
+		endpoints:          endpoints,
+		endpointMap:        endpointMap,
+		unavailable:        make(map[string]time.Time),
+		retryCounts:        make(map[string]int),
+		endpointConnCounts: make(map[string]int),
+		pendingDials:       make(map[string]int),
+		countedConns:       make(map[gnet.Conn]string),
 	}
 
-	// store endpoints
-	pool.endpoints.Store(endpoints)
-
-	// store endpoints to map
-	for _, e := range endpoints {
-		pool.endpointMap.Store(e, struct{}{})
-	}
-
-	err := pool.initConns(requiredConnNum)
-	if err != nil {
+	if err := pool.initConns(requiredConnNum); err != nil {
+		pool.closeIdleConns()
 		return nil, err
 	}
 
-	// 启动后台任务，定期检查并尝试恢复不可用的节点
 	go pool.innerWork()
-
 	return pool, nil
 }
 
 type connPool struct {
-	connChan           chan gnet.Conn
-	index              atomic.Uint64
-	endpoints          atomic.Value
-	endpointMap        sync.Map
+	cmdCh     chan poolCmd
+	closeDone chan struct{}
+	closeOnce sync.Once
+	closed    atomic.Bool
+
+	size               int
+	index              uint64
 	connsPerEndpoint   int
 	requiredConnNum    int
 	dialer             Dialer
 	log                logger.Logger
-	unavailable        sync.Map
-	retryCounts        sync.Map
 	backoff            util.ExponentialBackoff
-	closeCh            chan struct{}
-	closeOnce          sync.Once
-	endpointConnCounts sync.Map      // 记录每个节点的连接数
-	maxConnLifetime    time.Duration // 连接的最大生命周期
+	maxConnLifetime    time.Duration
+	idleConns          []gnet.Conn
+	endpoints          []string
+	endpointMap        map[string]struct{}
+	unavailable        map[string]time.Time
+	retryCounts        map[string]int
+	endpointConnCounts map[string]int
+	pendingDials       map[string]int
+	countedConns       map[gnet.Conn]string
+}
+
+func (p *connPool) Get() (gnet.Conn, error) {
+	p.log.Debug("Get()")
+	if p.closed.Load() {
+		return nil, ErrPoolClosed
+	}
+
+	reply := make(chan getResult, 1)
+	cmd := poolCmd{kind: poolCmdGet, getReply: reply}
+	select {
+	case p.cmdCh <- cmd:
+	case <-p.closeDone:
+		return nil, ErrPoolClosed
+	}
+
+	select {
+	case result := <-reply:
+		return result.conn, result.err
+	case <-p.closeDone:
+		return nil, ErrPoolClosed
+	}
+}
+
+func (p *connPool) Put(conn gnet.Conn, err error) {
+	if conn == nil {
+		return
+	}
+
+	cmd := poolCmd{kind: poolCmdPut, conn: conn, err: err}
+	if p.closed.Load() {
+		CloseConn(conn, 0)
+		return
+	}
+
+	p.enqueue(cmd, func() { CloseConn(conn, defaultConnCloseDelay) })
+}
+
+func (p *connPool) UpdateEndpoints(all, add, del []string) {
+	if len(all) == 0 || p.closed.Load() {
+		return
+	}
+
+	cmd := poolCmd{
+		kind: poolCmdUpdateEndpoints,
+		all:  append([]string(nil), all...),
+		add:  append([]string(nil), add...),
+		del:  append([]string(nil), del...),
+	}
+	select {
+	case p.cmdCh <- cmd:
+	case <-p.closeDone:
+	}
+}
+
+func (p *connPool) NumPooled() int {
+	if p.closed.Load() {
+		return 0
+	}
+
+	reply := make(chan int, 1)
+	cmd := poolCmd{kind: poolCmdNumPooled, intReply: reply}
+	select {
+	case p.cmdCh <- cmd:
+	case <-p.closeDone:
+		return 0
+	}
+
+	select {
+	case n := <-reply:
+		return n
+	case <-p.closeDone:
+		return 0
+	}
+}
+
+// OnConnClosed handles conn closed event, call it when conn is closed actively by the server
+func (p *connPool) OnConnClosed(conn gnet.Conn, err error) {
+	if conn == nil || p.closed.Load() {
+		return
+	}
+
+	cmd := poolCmd{kind: poolCmdConnClosed, conn: conn, err: err}
+	p.enqueue(cmd, nil)
+}
+
+// Close 关闭连接池，释放资源
+func (p *connPool) Close() {
+	p.closeOnce.Do(func() {
+		p.closed.Store(true)
+		done := make(chan struct{})
+		cmd := poolCmd{kind: poolCmdClose, done: done}
+		select {
+		case p.cmdCh <- cmd:
+			// Wait for the close command to be processed (which drains
+			// cmdCh and closes idle conns). closeDone is closed before
+			// done, so do not race against it here.
+			<-done
+		case <-p.closeDone:
+		}
+	})
+}
+
+func (p *connPool) enqueue(cmd poolCmd, onDrop func()) {
+	select {
+	case p.cmdCh <- cmd:
+		return
+	default:
+	}
+
+	go func() {
+		select {
+		case p.cmdCh <- cmd:
+		case <-p.closeDone:
+			if onDrop != nil {
+				onDrop()
+			}
+		}
+	}()
+}
+
+func (p *connPool) innerWork() {
+	defer func() {
+		if rec := recover(); rec != nil {
+			p.log.Error("panic in connection pool:", rec)
+			p.log.Error(string(debug.Stack()))
+		}
+		// Best-effort: ensure closeDone is closed even if we exit via panic.
+		// The normal close path closes it before draining cmdCh.
+		select {
+		case <-p.closeDone:
+		default:
+			close(p.closeDone)
+		}
+	}()
+
+	recoverTicker := time.NewTicker(10 * time.Second)
+	defer recoverTicker.Stop()
+	dumpTicker := time.NewTicker(10 * time.Second)
+	defer dumpTicker.Stop()
+	reBalanceTicker := time.NewTicker(defaultConnCloseDelay + 30*time.Second)
+	defer reBalanceTicker.Stop()
+
+	var cleanExpiredConnChan <-chan time.Time
+	if p.maxConnLifetime > 0 {
+		cleanExpiredConnTicker := time.NewTicker(1 * time.Minute)
+		defer cleanExpiredConnTicker.Stop()
+		cleanExpiredConnChan = cleanExpiredConnTicker.C
+	}
+
+	for {
+		select {
+		case cmd := <-p.cmdCh:
+			if p.handleCmd(cmd) {
+				return
+			}
+		case <-recoverTicker.C:
+			if p.recover() {
+				p.rebalance()
+			}
+		case <-dumpTicker.C:
+			p.dump()
+		case <-reBalanceTicker.C:
+			p.rebalance()
+		case <-cleanExpiredConnChan:
+			p.cleanExpiredConns()
+		}
+	}
+}
+
+func (p *connPool) handleCmd(cmd poolCmd) bool {
+	switch cmd.kind {
+	case poolCmdGet:
+		p.handleGet(cmd.getReply)
+	case poolCmdPut:
+		p.putConn(cmd.conn, cmd.err, false)
+	case poolCmdUpdateEndpoints:
+		p.handleUpdateEndpoints(cmd.all, cmd.add, cmd.del)
+	case poolCmdConnClosed:
+		p.handleConnClosed(cmd.conn, cmd.err)
+	case poolCmdDialResult:
+		p.handleDialResult(cmd.addr, cmd.conn, cmd.err, cmd.getReply)
+	case poolCmdNumPooled:
+		cmd.intReply <- len(p.idleConns)
+	case poolCmdClose:
+		// Close closeDone first so any in-flight dial goroutines hit the
+		// closeDone branch instead of pushing new dialResult cmds into cmdCh.
+		// Then drain whatever already made it into cmdCh to avoid leaking
+		// conns or hanging callers.
+		close(p.closeDone)
+		p.closeIdleConns()
+		p.drainCmdChOnClose()
+		close(cmd.done)
+		return true
+	}
+	return false
+}
+
+// drainCmdChOnClose drains commands left in cmdCh after Close is being
+// processed. closeDone has already been closed by the caller, so producers
+// will not enqueue new dial results past this point.
+//
+// It must close any conn carried by Put/DialResult to avoid leaks, and reply
+// to outstanding Get/NumPooled callers with ErrPoolClosed.
+func (p *connPool) drainCmdChOnClose() {
+	for {
+		select {
+		case cmd := <-p.cmdCh:
+			switch cmd.kind {
+			case poolCmdGet:
+				if cmd.getReply != nil {
+					cmd.getReply <- getResult{err: ErrPoolClosed}
+				}
+			case poolCmdPut:
+				if cmd.conn != nil {
+					CloseConn(cmd.conn, 0)
+				}
+			case poolCmdConnClosed:
+				// nothing to release; connection is already closed by gnet.
+			case poolCmdDialResult:
+				if cmd.conn != nil {
+					CloseConn(cmd.conn, 0)
+				}
+				if cmd.getReply != nil {
+					cmd.getReply <- getResult{err: ErrPoolClosed}
+				}
+			case poolCmdNumPooled:
+				if cmd.intReply != nil {
+					cmd.intReply <- 0
+				}
+			case poolCmdUpdateEndpoints:
+				// drop silently; pool is shutting down.
+			case poolCmdClose:
+				if cmd.done != nil {
+					close(cmd.done)
+				}
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (p *connPool) handleGet(reply chan getResult) {
+	if p.closed.Load() {
+		reply <- getResult{err: ErrPoolClosed}
+		return
+	}
+
+	for len(p.idleConns) > 0 {
+		conn := p.popIdleConn()
+		addr := getRemoteAddr(conn)
+		if p.isConnUsable(conn, addr) {
+			reply <- getResult{conn: conn}
+			return
+		}
+		p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+	}
+
+	addr, err := p.getEndpoint()
+	if err != nil {
+		reply <- getResult{err: err}
+		return
+	}
+	p.startDial(addr, reply)
+}
+
+func (p *connPool) handleDialResult(addr string, conn gnet.Conn, err error, reply chan getResult) {
+	if p.pendingDials[addr] > 1 {
+		p.pendingDials[addr]--
+	} else {
+		delete(p.pendingDials, addr)
+	}
+
+	if p.closed.Load() {
+		if conn != nil {
+			CloseConn(conn, 0)
+		}
+		if reply != nil {
+			reply <- getResult{err: ErrPoolClosed}
+		}
+		return
+	}
+
+	if err != nil {
+		p.markUnavailable(addr)
+		p.retryCounts[addr]++
+		if reply != nil {
+			reply <- getResult{err: err}
+		}
+		return
+	}
+
+	if conn == nil {
+		if reply != nil {
+			reply <- getResult{err: errors.New("dial returned nil connection")}
+		}
+		return
+	}
+
+	connAddr := getRemoteAddr(conn)
+	if connAddr == "" {
+		connAddr = addr
+	}
+	if _, ok := p.endpointMap[connAddr]; !ok {
+		CloseConn(conn, 0)
+		if reply != nil {
+			p.retryGetFromCurrentEndpoints(reply)
+		}
+		return
+	}
+
+	delete(p.unavailable, connAddr)
+	delete(p.retryCounts, connAddr)
+	p.incEndpointConnCount(conn, connAddr)
+	if reply != nil {
+		reply <- getResult{conn: conn}
+		return
+	}
+	p.storeIdleConn(conn, connAddr)
+}
+
+func (p *connPool) handleConnClosed(conn gnet.Conn, err error) {
+	addr := getRemoteAddr(conn)
+	if addr != "" && err != nil {
+		p.markUnavailable(addr)
+	}
+	p.decEndpointConnCount(conn, addr)
+	p.removeIdleConn(conn)
+}
+
+func (p *connPool) handleUpdateEndpoints(all, add, del []string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			p.log.Error("panic when update endpoints:", rec)
+			p.log.Error(string(debug.Stack()))
+		}
+	}()
+
+	if len(all) == 0 {
+		return
+	}
+	p.log.Debug("UpdateEndpoints")
+	p.log.Debug("all:", all)
+	p.log.Debug("add:", add)
+	p.log.Debug("del:", del)
+
+	p.endpoints = append(p.endpoints[:0], all...)
+	newEndpointMap := make(map[string]struct{}, len(all))
+	for _, ep := range all {
+		newEndpointMap[ep] = struct{}{}
+	}
+	p.endpointMap = newEndpointMap
+
+	for ep := range p.unavailable {
+		if _, ok := p.endpointMap[ep]; !ok {
+			delete(p.unavailable, ep)
+			delete(p.retryCounts, ep)
+		}
+	}
+
+	if len(del) > 0 {
+		p.log.Debug("delete old connections...")
+	}
+	p.removeDeletedEndpointConns()
+
+	if len(add) > 0 || len(del) > 0 {
+		p.rebalance()
+	}
+}
+
+func (p *connPool) initConns(count int) error {
+	conns := make([]gnet.Conn, 0, count)
+	for i := 0; i < count; i++ {
+		conn, err := p.newConn()
+		if err != nil {
+			for _, conn := range conns {
+				_ = conn.Close()
+			}
+			return err
+		}
+		conns = append(conns, conn)
+	}
+
+	for _, conn := range conns {
+		p.putConn(conn, nil, true)
+	}
+	return nil
+}
+
+func (p *connPool) getEndpoint() (string, error) {
+	p.log.Debug("getEndpoint()")
+	if len(p.endpoints) == 0 {
+		return "", ErrNoAvailableEndpoint
+	}
+
+	for i := 0; i < len(p.endpoints); i++ {
+		index := p.index
+		p.index++
+		ep := p.endpoints[index%uint64(len(p.endpoints))]
+		if _, unavailable := p.unavailable[ep]; unavailable {
+			continue
+		}
+		return ep, nil
+	}
+
+	return "", ErrNoAvailableEndpoint
+}
+
+func (p *connPool) newConn() (gnet.Conn, error) {
+	p.log.Debug("newConn()")
+	ep, err := p.getEndpoint()
+	if err != nil {
+		return nil, err
+	}
+	return p.dialNewConn(ep)
+}
+
+func (p *connPool) dialNewConn(ep string) (gnet.Conn, error) {
+	p.log.Debug("dialNewConn()")
+	conn, err := p.dialer.Dial(ep, ConnContext{CreatedAt: time.Now(), Endpoint: ep})
+	if err != nil {
+		p.markUnavailable(ep)
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (p *connPool) startDial(addr string, reply chan getResult) {
+	if addr == "" {
+		if reply != nil {
+			reply <- getResult{err: errors.New("addr is empty")}
+		}
+		return
+	}
+	if p.closed.Load() {
+		if reply != nil {
+			reply <- getResult{err: ErrPoolClosed}
+		}
+		return
+	}
+	p.pendingDials[addr]++
+	go func() {
+		if p.closed.Load() {
+			if reply != nil {
+				reply <- getResult{err: ErrPoolClosed}
+			}
+			return
+		}
+
+		conn, err := p.dialer.Dial(addr, ConnContext{CreatedAt: time.Now(), Endpoint: addr})
+		if p.closed.Load() {
+			if conn != nil {
+				CloseConn(conn, 0)
+			}
+			if reply != nil {
+				reply <- getResult{err: ErrPoolClosed}
+			}
+			return
+		}
+
+		cmd := poolCmd{kind: poolCmdDialResult, addr: addr, conn: conn, err: err, getReply: reply}
+		select {
+		case p.cmdCh <- cmd:
+		case <-p.closeDone:
+			if conn != nil {
+				CloseConn(conn, 0)
+			}
+			if reply != nil {
+				reply <- getResult{err: ErrPoolClosed}
+			}
+		}
+	}()
+}
+
+func (p *connPool) retryGetFromCurrentEndpoints(reply chan getResult) {
+	if len(p.endpoints) == 0 || p.getAvailableEndpointCount() <= 0 {
+		reply <- getResult{err: ErrNoAvailableEndpoint}
+		return
+	}
+	p.handleGet(reply)
+}
+
+func (p *connPool) putConn(conn gnet.Conn, err error, isNewConn bool) {
+	if conn == nil {
+		return
+	}
+
+	addr := getRemoteAddr(conn)
+	if addr == "" {
+		p.log.Error("remote address is nil, it is closed, stop putting")
+		CloseConn(conn, defaultConnCloseDelay)
+		return
+	}
+
+	if _, ok := p.endpointMap[addr]; !ok {
+		p.log.Warn("endpoint deleted, close its connection, addr:", addr)
+		p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+		return
+	}
+
+	if err != nil {
+		p.log.Warn("connection error, close it, addr:", addr, ", err:", err)
+		p.markUnavailable(addr)
+		p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+		return
+	}
+
+	if p.expired(conn) {
+		p.log.Debug("connection expired, close it, addr:", addr, ", err:", err)
+		p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+		p.startDial(addr, nil)
+		return
+	}
+
+	if isNewConn {
+		p.incEndpointConnCount(conn, addr)
+	}
+	p.storeIdleConn(conn, addr)
+}
+
+func (p *connPool) storeIdleConn(conn gnet.Conn, addr string) {
+	if len(p.idleConns) >= p.size {
+		p.log.Warn("connection pool is full, closing connection, addr: ", addr)
+		p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+		return
+	}
+	p.idleConns = append(p.idleConns, conn)
+}
+
+func (p *connPool) isConnUsable(conn gnet.Conn, addr string) bool {
+	if conn == nil || addr == "" {
+		return false
+	}
+	if _, ok := p.endpointMap[addr]; !ok {
+		return false
+	}
+	return !p.expired(conn)
 }
 
 func (p *connPool) expired(conn gnet.Conn) bool {
@@ -176,385 +749,115 @@ func (p *connPool) expired(conn gnet.Conn) bool {
 	return connCtx.CreatedAt.Add(p.maxConnLifetime).Before(time.Now())
 }
 
-func (p *connPool) Get() (gnet.Conn, error) {
-	p.log.Debug("Get()")
-	select {
-	case conn := <-p.connChan:
-		return conn, nil
-	default:
-		conn, err := p.newConn()
-		if err != nil {
-			return nil, err
-		}
-		addr := conn.RemoteAddr()
-		if addr == nil {
-			CloseConn(conn, 0)
-			p.log.Error("new connection has nil remote address")
-			return nil, errors.New("new connection has nil remote address")
-		}
-		p.incEndpointConnCount(addr.String())
-		return conn, nil
+func (p *connPool) incEndpointConnCount(conn gnet.Conn, addr string) {
+	if conn == nil || addr == "" {
+		return
 	}
+	if _, ok := p.countedConns[conn]; ok {
+		return
+	}
+	p.countedConns[conn] = addr
+	p.endpointConnCounts[addr]++
 }
 
-func (p *connPool) getEndpoint() (string, error) {
-	p.log.Debug("getEndpoint()")
-	epValue := p.endpoints.Load()
-	endpoints, ok := epValue.([]string)
-	if !ok || len(endpoints) == 0 {
-		return "", ErrNoAvailableEndpoint
-	}
-
-	for i := 0; i < len(endpoints); i++ {
-		index := p.index.Load()
-		p.index.Add(1)
-		ep := endpoints[index%uint64(len(endpoints))]
-
-		// 在不可用节点列表里，跳过
-		_, unavailable := p.unavailable.Load(ep)
-		if unavailable {
-			continue
-		}
-
-		return ep, nil
-	}
-
-	return "", ErrNoAvailableEndpoint
-}
-
-func (p *connPool) newConn() (gnet.Conn, error) {
-	p.log.Debug("newConn()")
-	ep, err := p.getEndpoint()
-	if err != nil {
-		return nil, err
-	}
-
-	return p.dialNewConn(ep)
-}
-
-func (p *connPool) dialNewConn(ep string) (gnet.Conn, error) {
-	p.log.Debug("dialNewConn()")
-	conn, err := p.dialer.Dial(ep, ConnContext{CreatedAt: time.Now(), Endpoint: ep})
-	if err != nil {
-		p.markUnavailable(ep)
-		return nil, err
-	}
-	return conn, nil
-}
-
-func (p *connPool) initConns(count int) error {
-	// create some conns and then put them back to the pool
-	var wg sync.WaitGroup
-	conns := make(chan gnet.Conn, count)
-	errs := make(chan error, count)
-
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			conn, err := p.newConn()
-			if err != nil {
-				errs <- err
-				return
-			}
-			conns <- conn
-		}()
-	}
-
-	wg.Wait()
-	close(conns)
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			for conn := range conns {
-				_ = conn.Close()
-			}
-			return err
-		}
-	}
-
-	for conn := range conns {
-		p.put(conn, nil, true)
-	}
-
-	return nil
-}
-
-func (p *connPool) Put(conn gnet.Conn, err error) {
-	p.put(conn, err, false)
-}
-
-func (p *connPool) put(conn gnet.Conn, err error, isNewConn bool) {
+func (p *connPool) decEndpointConnCount(conn gnet.Conn, addr string) {
 	if conn == nil {
 		return
 	}
-
-	remoteAddr := conn.RemoteAddr()
-	if remoteAddr == nil {
-		p.log.Error("remote address is nil, it is closed, stop putting")
-		CloseConn(conn, defaultConnCloseDelay)
-		return
-	}
-
-	addr := remoteAddr.String()
-	if _, ok := p.endpointMap.Load(addr); !ok {
-		p.log.Warn("endpoint deleted, close its connection, addr:", addr)
-		CloseConn(conn, defaultConnCloseDelay)
-		return
-	}
-
-	// 如果出错了，先关闭该连接
-	if err != nil {
-		p.log.Warn("connection error, close it, addr:", addr, ", err:", err)
-		CloseConn(conn, defaultConnCloseDelay)
-		return
-	}
-
-	// 如果超时了，也关闭该连接
-	if p.expired(conn) {
-		p.log.Debug("connection expired, close it, addr:", addr, ", err:", err)
-		CloseConn(conn, defaultConnCloseDelay)
-		// 关闭连接后，可用连接数变少，addr对应的节点的连接数可能也不均衡，尽管会递归调用当前函数，仍在这里追加创建新的连接
-		_ = p.appendNewConn(addr)
-		return
-	}
-
-	select {
-	case p.connChan <- conn:
-		// 更新连接数
-		if isNewConn {
-			p.incEndpointConnCount(addr)
-		}
-	default:
-		// connChan is full, close the connection after 2m
-		p.log.Warn("connection pool is full, closing connection, addr: ", addr)
-		CloseConn(conn, defaultConnCloseDelay)
-	}
-}
-
-func (p *connPool) incEndpointConnCount(addr string) {
-	count, _ := p.endpointConnCounts.LoadOrStore(addr, 0)
-	p.endpointConnCounts.Store(addr, count.(int)+1)
-}
-
-func (p *connPool) decEndpointConnCount(addr string) {
-	count, ok := p.endpointConnCounts.Load(addr)
+	countedAddr, ok := p.countedConns[conn]
 	if !ok {
 		return
 	}
-
-	if count.(int) > 0 {
-		if count.(int) == 1 {
-			p.endpointConnCounts.Delete(addr)
-			return
-		}
-
-		p.endpointConnCounts.Store(addr, count.(int)-1)
+	delete(p.countedConns, conn)
+	if addr == "" {
+		addr = countedAddr
 	}
-}
-
-func (p *connPool) UpdateEndpoints(all, add, del []string) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			p.log.Error("panic when update endpoints:", rec)
-			p.log.Error(string(debug.Stack()))
-		}
-	}()
-
-	if len(all) == 0 {
+	count := p.endpointConnCounts[addr]
+	if count <= 1 {
+		delete(p.endpointConnCounts, addr)
 		return
 	}
-	p.log.Debug("UpdateEndpoints")
-	p.log.Debug("all:", all)
-	p.log.Debug("add:", add)
-	p.log.Debug("del:", del)
-	endpoints := make([]string, 0, len(all))
-	endpoints = append(endpoints, all...)
-	p.endpoints.Store(endpoints)
+	p.endpointConnCounts[addr] = count - 1
+}
 
-	// store new endpoints to map
-	for _, ep := range add {
-		p.endpointMap.Store(ep, struct{}{})
+func (p *connPool) closeCountedConn(conn gnet.Conn, addr string, after time.Duration) {
+	// Decrement the count immediately but delay the physical close. This way the
+	// next rebalance round sees an accurate curConnCount (excluding these
+	// "dying" conns), while existing users of the conn can finish their work
+	// during the close-delay window. Subsequent OnConnClosed/Put events for the
+	// same conn become no-ops because countedConns[conn] is already gone, so
+	// the count is not double-decremented.
+	p.decEndpointConnCount(conn, addr)
+	CloseConn(conn, after)
+}
+
+func (p *connPool) popIdleConn() gnet.Conn {
+	conn := p.idleConns[0]
+	copy(p.idleConns, p.idleConns[1:])
+	p.idleConns[len(p.idleConns)-1] = nil
+	p.idleConns = p.idleConns[:len(p.idleConns)-1]
+	return conn
+}
+
+func (p *connPool) closeIdleConns() {
+	for _, conn := range p.idleConns {
+		addr := getRemoteAddr(conn)
+		p.closeCountedConn(conn, addr, 0)
 	}
+	p.idleConns = nil
+}
 
-	//
-	delEndpoints := make(map[string]struct{})
-	for _, ep := range del {
-		p.endpointMap.Delete(ep)
-		p.unavailable.Delete(ep)
-		p.retryCounts.Delete(ep)
-
-		delEndpoints[ep] = struct{}{}
+func (p *connPool) removeIdleConn(target gnet.Conn) {
+	if target == nil || len(p.idleConns) == 0 {
+		return
 	}
-
-	if len(delEndpoints) > 0 {
-		// delete connections for deleted endpoints
-		p.log.Debug("delete old connections...")
-
-		// 使用临时切片存储从 connChan 中取出的连接
-		tempConns := make([]gnet.Conn, 0, cap(p.connChan))
-	loop:
-		for i := 0; i < cap(p.connChan); i++ {
-			select {
-			case conn := <-p.connChan:
-				// fix: when conn is closed by peer, remote addr may be nil
-				remoteAddr := conn.RemoteAddr()
-				if remoteAddr == nil {
-					CloseConn(conn, 0)
-					continue
-				}
-
-				addr := remoteAddr.String()
-				if _, ok := delEndpoints[addr]; ok {
-					p.log.Warn("endpoint deleted, close its connection, addr:", addr)
-					CloseConn(conn, defaultConnCloseDelay)
-					// 对于已下线的节点，我们提前扣减其连接数，这样在重新平衡时就可以避免创建过多的连接
-					p.decEndpointConnCount(addr)
-				} else {
-					tempConns = append(tempConns, conn)
-				}
-			default:
-				// 没有更多的连接了，退出循环
-				break loop
-			}
+	for i, conn := range p.idleConns {
+		if conn == target {
+			p.idleConns = append(p.idleConns[:i], p.idleConns[i+1:]...)
+			return
 		}
-
-		// 将非目标连接重新放回 connChan
-		for _, chConn := range tempConns {
-			select {
-			case p.connChan <- chConn:
-			default:
-				// 如果 connChan 已满，停止放回
-				CloseConn(chConn, defaultConnCloseDelay)
-			}
-		}
-	}
-
-	// 重新均衡
-	if len(add) > 0 || len(del) > 0 {
-		p.rebalance()
 	}
 }
 
-func (p *connPool) NumPooled() int {
-	return len(p.connChan)
+func (p *connPool) removeDeletedEndpointConns() {
+	left := make([]gnet.Conn, 0, len(p.idleConns))
+	for _, conn := range p.idleConns {
+		addr := getRemoteAddr(conn)
+		if _, ok := p.endpointMap[addr]; !ok {
+			p.log.Warn("endpoint deleted, close its connection, addr:", addr)
+			p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+			continue
+		}
+		left = append(left, conn)
+	}
+	p.idleConns = left
 }
 
 // CloseConn closes a connection after a duration of time
 func CloseConn(conn gnet.Conn, after time.Duration) {
+	if conn == nil {
+		return
+	}
 	if after <= 0 {
 		_ = conn.Close()
 		return
 	}
-
-	ctx := context.Background()
-	go func() {
-		select {
-		case <-time.After(after):
-			_ = conn.Close()
-			return
-		case <-ctx.Done():
-			_ = conn.Close()
-			return
-		}
-	}()
-}
-
-// OnConnClosed handles conn closed event, call it when conn is closed actively by the server
-func (p *connPool) OnConnClosed(conn gnet.Conn, err error) {
-	remoteAddr := conn.RemoteAddr()
-	if remoteAddr != nil {
-		addr := remoteAddr.String()
-		if err != nil {
-			p.markUnavailable(addr)
-		}
-		p.decEndpointConnCount(addr)
-	}
-
-	// 使用临时切片存储从 connChan 中取出的连接
-	tempConns := make([]gnet.Conn, 0, cap(p.connChan))
-
-	// 遍历 connChan，找到并删除关闭的连接
-loop:
-	for i := 0; i < cap(p.connChan); i++ {
-		select {
-		case chConn := <-p.connChan:
-			if chConn != conn && chConn.RemoteAddr() != nil {
-				// 如果不是要删除的连接，则存储到临时切片
-				tempConns = append(tempConns, chConn)
-			} else {
-				if remoteAddr != nil {
-					p.log.Debug("remove conn from pool, addr:", remoteAddr.String())
-				}
-			}
-		default:
-			// 没有更多的连接了，退出循环
-			break loop
-		}
-	}
-
-	// 将非目标连接重新放回 connChan
-	for _, chConn := range tempConns {
-		select {
-		case p.connChan <- chConn:
-		default:
-			// 如果 connChan 已满，停止放回
-			CloseConn(chConn, defaultConnCloseDelay)
-		}
-	}
+	time.AfterFunc(after, func() {
+		_ = conn.Close()
+	})
 }
 
 func (p *connPool) markUnavailable(ep string) {
-	// if there is only 1 endpoint, it is always available
-	// it is common when endpoint address is a CLB VIP
-	epCount := p.getEndpointCount()
-	if epCount <= 1 {
+	if ep == "" || p.getEndpointCount() <= 1 {
 		return
 	}
-
-	p.log.Debug("endpoint cannot be connected, marking as unavailable, addr: ", ep)
-	p.unavailable.Store(ep, time.Now())
-	p.retryCounts.Store(ep, 0)
-}
-
-// innerWork 定期检查并尝试恢复不可用的节点
-func (p *connPool) innerWork() {
-	// 服务器故障是小概率事件，基本没有需要恢复探测的，频率高一点也没关系
-	recoverTicker := time.NewTicker(10 * time.Second)
-	defer recoverTicker.Stop()
-	// 每10秒打印一下连接池状态
-	dumpTicker := time.NewTicker(10 * time.Second)
-	defer dumpTicker.Stop()
-	// 负载均衡会基于现有连接数计算新的平衡连接数，因为有的连接是延迟关闭，所以把负载均衡触发周期设置为大于延迟关闭的时间
-	reBalanceTicker := time.NewTicker(defaultConnCloseDelay + 30*time.Second)
-	defer reBalanceTicker.Stop()
-
-	// 每分钟清理过期的连接
-	var cleanExpiredConnChan <-chan time.Time
-	if p.maxConnLifetime > 0 {
-		cleanExpiredConnTicker := time.NewTicker(1 * time.Minute)
-		defer cleanExpiredConnTicker.Stop()
-		cleanExpiredConnChan = cleanExpiredConnTicker.C
+	if _, ok := p.endpointMap[ep]; !ok {
+		return
 	}
-
-	for {
-		select {
-		case <-recoverTicker.C:
-			// 重新均衡
-			recovered := p.recover()
-			if recovered {
-				p.rebalance()
-			}
-		case <-dumpTicker.C:
-			p.dump()
-		case <-reBalanceTicker.C:
-			p.rebalance()
-		case <-p.closeCh:
-			return
-		case <-cleanExpiredConnChan:
-			p.cleanExpiredConns()
-		}
+	p.log.Debug("endpoint cannot be connected, marking as unavailable, addr: ", ep)
+	p.unavailable[ep] = time.Now()
+	if _, ok := p.retryCounts[ep]; !ok {
+		p.retryCounts[ep] = 0
 	}
 }
 
@@ -581,96 +884,53 @@ func getRemoteAddr(conn gnet.Conn) string {
 
 func (p *connPool) cleanExpiredConns() {
 	p.log.Debug("cleanExpiredConns()")
-	var leftConns []gnet.Conn
-	var expiredConns []gnet.Conn
-loop:
-	for i := 0; i < cap(p.connChan); i++ {
-		select {
-		case conn := <-p.connChan:
-			if p.expired(conn) {
-				expiredConns = append(expiredConns, conn)
-				continue
-			}
-
-			// 不是目标连接，放回去
-			leftConns = append(leftConns, conn)
-		default:
-			// 没有更多的连接了，退出循环
-			break loop
+	left := make([]gnet.Conn, 0, len(p.idleConns))
+	for _, conn := range p.idleConns {
+		if p.expired(conn) {
+			addr := getRemoteAddr(conn)
+			p.log.Debug("connection expired, close it, addr:", addr, ", err:", nil)
+			p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+			p.startDial(addr, nil)
+			continue
 		}
+		left = append(left, conn)
 	}
-
-	// 未过期的放回去
-	for _, left := range leftConns {
-		select {
-		case p.connChan <- left:
-		default:
-			CloseConn(left, defaultConnCloseDelay)
-		}
-	}
-
-	// 已过期的，关闭，并补充新的
-	for _, expired := range expiredConns {
-		addr := getRemoteAddr(expired)
-		p.log.Debug("connection expired, close it, addr:", addr, ", err:", nil)
-		CloseConn(expired, defaultConnCloseDelay)
-		_ = p.appendNewConn(addr)
-	}
+	p.idleConns = left
 }
 
 func (p *connPool) dump() {
 	p.log.Debug("all endpoints:")
-	eps := p.endpoints.Load()
-	endpoints, ok := eps.([]string)
-	if ok {
-		for _, ep := range endpoints {
-			p.log.Debug(ep)
-		}
+	for _, ep := range p.endpoints {
+		p.log.Debug(ep)
 	}
 
 	dump := false
-	p.unavailable.Range(func(key, value any) bool {
+	for ep := range p.unavailable {
 		if !dump {
 			p.log.Debug("unavailable endpoints:")
 			dump = true
 		}
-		p.log.Debug(key)
-		return true
-	})
+		p.log.Debug(ep)
+	}
 
 	p.log.Debug("opened connections:")
-	p.endpointConnCounts.Range(func(key, value any) bool {
-		p.log.Debug("endpoint: ", key, ", conns: ", value.(int))
-		return true
-	})
+	for ep, count := range p.endpointConnCounts {
+		p.log.Debug("endpoint: ", ep, ", conns: ", count)
+	}
 }
 
 func (p *connPool) recover() bool {
 	recovered := false
-	p.unavailable.Range(func(key, value any) bool {
-		lastUnavailable := value.(time.Time)
-		retries := 0
-		if retry, ok := p.retryCounts.Load(key); ok {
-			retries = retry.(int)
+	for ep, lastUnavailable := range p.unavailable {
+		if p.pendingDials[ep] > 0 {
+			continue
 		}
+		retries := p.retryCounts[ep]
 		if time.Since(lastUnavailable) > p.backoff.Next(retries) {
-			// 尝试创建新连接
-			conn, err := p.dialer.Dial(key.(string), ConnContext{CreatedAt: time.Now(), Endpoint: key.(string)})
-			if err == nil {
-				p.log.Debug("endpoint recovered, addr: ", key)
-				p.put(conn, nil, true)
-				p.unavailable.Delete(key)
-				p.retryCounts.Delete(key)
-				recovered = true
-			} else {
-				p.log.Info("failed to recover endpoint, addr: ", key, ", err: ", err)
-				// 更新重试次数
-				retries++
-				p.retryCounts.Store(key, retries)
-			}
+			p.startDial(ep, nil)
+			recovered = true
 		}
-		return true
-	})
+	}
 	if recovered {
 		p.log.Debug("recover triggered")
 	}
@@ -678,39 +938,25 @@ func (p *connPool) recover() bool {
 }
 
 func (p *connPool) getConnCount() int {
-	// 计算当前已创建的连接数
 	totalConnCount := 0
-	p.endpointConnCounts.Range(func(key, value any) bool {
-		totalConnCount += value.(int)
-		return true
-	})
+	for _, count := range p.endpointConnCounts {
+		totalConnCount += count
+	}
 	return totalConnCount
 }
 
 func (p *connPool) getEndpointCount() int {
-	epValue := p.endpoints.Load()
-	endpoints, ok := epValue.([]string)
-	if !ok {
-		return 0
-	}
-
-	return len(endpoints)
+	return len(p.endpoints)
 }
 
 func (p *connPool) getAvailableEndpointCount() int {
 	unavailableEndpointNum := 0
-	p.unavailable.Range(func(key, value any) bool {
-		unavailableEndpointNum++
-		return true
-	})
-
-	epValue := p.endpoints.Load()
-	endpoints, ok := epValue.([]string)
-	if !ok {
-		return 0
+	for ep := range p.unavailable {
+		if _, ok := p.endpointMap[ep]; ok {
+			unavailableEndpointNum++
+		}
 	}
-
-	return len(endpoints) - unavailableEndpointNum
+	return len(p.endpoints) - unavailableEndpointNum
 }
 
 func (p *connPool) getExpectedConnPerEndpoint() int {
@@ -773,121 +1019,63 @@ func (p *connPool) rebalance() {
 	}
 
 	rebalanced := false
-	p.endpointConnCounts.Range(func(key, value any) bool {
-		addr := key.(string)
-		currentCount := value.(int)
+	// Iterating endpointConnCounts while removeEndpointConn -> closeCountedConn
+	// may delete or decrement entries in this same map. Per the Go spec, deleting
+	// the current key during range is well-defined (the deleted key won't be
+	// revisited); we only ever touch the current key, never insert new ones,
+	// so iteration is safe here.
+	for addr, currentCount := range p.endpointConnCounts {
 		if currentCount < expectedConnPerEndpoint {
-			// 节点已经不在服务发现结果列表里了，不再增加连接数
-			if _, ok := p.endpointMap.Load(addr); !ok {
-				return true
+			if _, ok := p.endpointMap[addr]; !ok {
+				continue
 			}
-
-			// 增加连接数
-			for i := currentCount; i < expectedConnPerEndpoint; i++ {
-				err := p.appendNewConn(addr)
-				if err != nil {
-					continue
-				}
+			if _, unavailable := p.unavailable[addr]; unavailable {
+				continue
+			}
+			need := expectedConnPerEndpoint - currentCount - p.pendingDials[addr]
+			for i := 0; i < need; i++ {
+				p.log.Debug("adding connection for addr: ", addr)
+				p.startDial(addr, nil)
 				rebalanced = true
 			}
 		} else if currentCount > expectedConnPerEndpoint {
 			rebalanced = true
-			// 减少连接数
 			p.removeEndpointConn(addr, currentCount-expectedConnPerEndpoint)
 		}
-		return true
-	})
+	}
 
-	p.endpointMap.Range(func(key, value any) bool {
-		addr := key.(string)
-		if _, ok := p.endpointConnCounts.Load(key); ok {
-			return true
+	for addr := range p.endpointMap {
+		if _, ok := p.endpointConnCounts[addr]; ok {
+			continue
 		}
-		for i := 0; i < expectedConnPerEndpoint; i++ {
-			err := p.appendNewConn(addr)
-			if err != nil {
-				continue
-			}
+		if _, unavailable := p.unavailable[addr]; unavailable {
+			continue
+		}
+		need := expectedConnPerEndpoint - p.pendingDials[addr]
+		for i := 0; i < need; i++ {
+			p.log.Debug("adding connection for addr: ", addr)
+			p.startDial(addr, nil)
 			rebalanced = true
 		}
-		return true
-	})
+	}
 
 	if rebalanced {
 		p.log.Debug("rebalance triggered")
 	}
 }
 
-func (p *connPool) appendNewConn(addr string) error {
-	if addr == "" {
-		return errors.New("addr is empty")
-	}
-
-	conn, err := p.dialNewConn(addr)
-	if err != nil {
-		p.log.Warn("failed to add connection, addr: ", addr, ", err: ", err)
-		return err
-	}
-
-	p.log.Debug("adding connection for addr: ", addr)
-	p.put(conn, nil, true)
-	return nil
-}
-
 func (p *connPool) removeEndpointConn(addr string, count int) {
-	var leftConns []gnet.Conn
-	var removed int
-loop:
-	for i := 0; i < cap(p.connChan); i++ {
-		select {
-		case conn := <-p.connChan:
-			remoteAddr := conn.RemoteAddr()
-			if remoteAddr == nil {
-				continue
-			}
-
-			if remoteAddr.String() == addr {
-				p.log.Debug("reducing connection for addr: ", addr)
-				// 这里关闭连接关没有扣减连接计数器，如果负载均衡的触发周期小于这个defaultConnCloseDelay，有可能导致一下次负载均衡时算出来的期望连接数不对
-				CloseConn(conn, defaultConnCloseDelay)
-				removed++
-				if removed >= count {
-					break loop
-				}
-
-				continue
-			}
-
-			// 不是目标连接，放回去
-			leftConns = append(leftConns, conn)
-		default:
-			// 没有更多的连接了，退出循环
-			break loop
+	left := make([]gnet.Conn, 0, len(p.idleConns))
+	removed := 0
+	for _, conn := range p.idleConns {
+		connAddr := getRemoteAddr(conn)
+		if connAddr == addr && removed < count {
+			p.log.Debug("reducing connection for addr: ", addr)
+			p.closeCountedConn(conn, addr, defaultConnCloseDelay)
+			removed++
+			continue
 		}
+		left = append(left, conn)
 	}
-
-	for _, conn := range leftConns {
-		select {
-		case p.connChan <- conn:
-		default:
-			CloseConn(conn, defaultConnCloseDelay)
-		}
-	}
-}
-
-// Close 关闭连接池，释放资源
-func (p *connPool) Close() {
-	p.closeOnce.Do(func() {
-		close(p.closeCh)
-
-		// 关闭所有连接
-		for {
-			select {
-			case conn := <-p.connChan:
-				CloseConn(conn, 0)
-			default:
-				return
-			}
-		}
-	})
+	p.idleConns = left
 }
