@@ -53,17 +53,17 @@ func ParseMessages(raw []byte) ([]Message, error) {
 // Note that this func uses reflect to traverse the fields of an object, it is recommended that you
 // implement you own converting function for your objects in the case that performance is critical.
 func ToTGLogString(obj interface{}) string {
-	r := reflect.ValueOf(obj)
-	n := reflect.TypeOf(obj).Name()
+	n, r, ok := tglogStructValue(obj)
 
 	var sb strings.Builder
 	sb.WriteString(n)
 
-	fieldNum := r.NumField()
-	for i := 0; i < fieldNum; i++ {
-		sb.WriteString("|")
-		f := r.Field(i).Interface()
-		sb.WriteString(toString(f))
+	if ok {
+		fieldNum := r.NumField()
+		for i := 0; i < fieldNum; i++ {
+			sb.WriteString("|")
+			sb.WriteString(toString(fieldValue(r.Field(i))))
+		}
 	}
 	sb.WriteString("\n")
 
@@ -72,18 +72,18 @@ func ToTGLogString(obj interface{}) string {
 
 // ToTGLogMessage converts an object into a TGLog Message
 func ToTGLogMessage(obj interface{}) Message {
-	r := reflect.ValueOf(obj)
-	n := reflect.TypeOf(obj).Name()
+	n, r, ok := tglogStructValue(obj)
 
 	var bb bytes.Buffer
 	bb.Grow(512) // 日志通常在500个字节左右
 	bb.WriteString(n)
 
-	fieldNum := r.NumField()
-	for i := 0; i < fieldNum; i++ {
-		bb.WriteString("|")
-		f := r.Field(i).Interface()
-		bb.WriteString(toString(f))
+	if ok {
+		fieldNum := r.NumField()
+		for i := 0; i < fieldNum; i++ {
+			bb.WriteString("|")
+			bb.WriteString(toString(fieldValue(r.Field(i))))
+		}
 	}
 	bb.WriteString("\n")
 
@@ -91,6 +91,35 @@ func ToTGLogMessage(obj interface{}) Message {
 		Name:    n,
 		Payload: bb.Bytes(),
 	}
+}
+
+func tglogStructValue(obj interface{}) (string, reflect.Value, bool) {
+	if obj == nil {
+		return "", reflect.Value{}, false
+	}
+
+	r := reflect.ValueOf(obj)
+	t := r.Type()
+	for t.Kind() == reflect.Ptr {
+		if r.IsNil() {
+			return t.Elem().Name(), reflect.Value{}, false
+		}
+		r = r.Elem()
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return t.Name(), reflect.Value{}, false
+	}
+
+	return t.Name(), r, true
+}
+
+func fieldValue(v reflect.Value) interface{} {
+	if !v.IsValid() || !v.CanInterface() {
+		return ""
+	}
+	return v.Interface()
 }
 
 // GetTGLogName gets the name from a TGLog string,
@@ -139,6 +168,9 @@ func toString(f interface{}) string {
 	case time.Time:
 		return t.Format(TimeFormat)
 	case *time.Time:
+		if t == nil {
+			return ""
+		}
 		return t.Format(TimeFormat)
 	case time.Duration:
 		return t.String()
