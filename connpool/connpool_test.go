@@ -407,3 +407,39 @@ func TestGetRetriesWhenDialEndpointDeleted(t *testing.T) {
 type errConnForTest struct{}
 
 func (errConnForTest) Error() string { return "connection error" }
+
+func TestNewConnPoolPartialDialFailureSucceeds(t *testing.T) {
+	dialer := &mockDialer{failFor: map[string]error{
+		"127.0.0.1:1": errConnForTest{},
+	}}
+	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1)
+	if err != nil {
+		t.Fatalf("NewConnPool returned err with one bad endpoint: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	// At least one connection should have been established (against :2).
+	if got := pool.NumPooled(); got < 1 {
+		t.Fatalf("NumPooled() = %d, want >= 1", got)
+	}
+	conn, err := pool.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr := getRemoteAddr(conn); addr != "127.0.0.1:2" {
+		t.Fatalf("Get() returned conn for %q, want 127.0.0.1:2", addr)
+	}
+	pool.Put(conn, nil)
+}
+
+func TestNewConnPoolAllDialFailuresReturnError(t *testing.T) {
+	dialer := &mockDialer{failFor: map[string]error{
+		"127.0.0.1:1": errConnForTest{},
+		"127.0.0.1:2": errConnForTest{},
+	}}
+	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1)
+	if err == nil {
+		pool.Close()
+		t.Fatal("NewConnPool succeeded when every endpoint failed to dial")
+	}
+}

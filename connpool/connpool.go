@@ -564,16 +564,31 @@ func (p *connPool) handleUpdateEndpoints(all, add, del []string) {
 }
 
 func (p *connPool) initConns(count int) error {
+	// Partial success is acceptable: as long as at least one connection is
+	// established, the pool starts. Endpoints that failed to dial are marked
+	// unavailable inside dialNewConn and will be retried by the background
+	// recover()/rebalance() loops. Returning an error only when every dial
+	// fails avoids spurious startup failures from transient network issues
+	// (DNS jitter, a single bad backend) while still surfacing a fully broken
+	// upstream to the caller.
 	conns := make([]gnet.Conn, 0, count)
+	var lastErr error
 	for i := 0; i < count; i++ {
 		conn, err := p.newConn()
 		if err != nil {
-			for _, conn := range conns {
-				_ = conn.Close()
-			}
-			return err
+			lastErr = err
+			continue
 		}
 		conns = append(conns, conn)
+	}
+
+	if len(conns) == 0 {
+		return lastErr
+	}
+
+	if len(conns) < count {
+		p.log.Warn("initConns partial success, required: ", count,
+			", succeeded: ", len(conns), ", lastErr: ", lastErr)
 	}
 
 	for _, conn := range conns {
