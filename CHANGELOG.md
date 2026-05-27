@@ -1,3 +1,27 @@
+## 0.6.0(2026-05-27)
+
+> 说明：建议升级到此版本，以获取更稳定的连接池行为、更易排查的失败日志，以及更少的外部依赖。
+
+特性：
+
+改进：
+- 重构连接池，将所有共享状态收敛到单goroutine actor模型处理，消除Get/Put/UpdateEndpoints/OnConnClosed并发路径之间的竞态；新增`countedConns`使连接计数幂等，新增`pendingDials`避免恢复/再均衡时重复建连；
+- 连接池UpdateEndpoints改为并发安全；
+- 连接池初始化允许部分连接成功：只要至少建成1条连接即视为成功，其余失败的endpoint由后台`recover`/`rebalance`自动重连，避免启动期DNS抖动或个别后端不可达直接导致client创建失败；
+- `Send`/重试/发送超时/心跳/服务端错误码 等失败日志补充服务端地址（`serverAddr`），定位问题更直观；为此将`connpool.getRemoteAddr`导出为`GetRemoteAddr`供外部复用；
+- 尊重`options.ConnTimeout`配置；
+- `CloseConn`改用`time.AfterFunc`实现延迟关闭，每次延迟关闭少起一个goroutine；
+- 将`go.uber.org/atomic`迁移到标准库`sync/atomic`，去掉一个外部直接依赖；
+- 升级依赖包；
+- 增加连接池单元测试；
+
+Bug修复：
+- 修复V3协议序列号生成的并发安全问题；
+- 修复V3协议帧头未遵循`LittleEndian`配置的问题；
+- 修复TGLog辅助函数类型转换在边界输入下不健壮的问题；
+
+
+
 ## 0.5.4(2025-12-25)
 
 > 说明：建议升级到此版本，以获取更好性能。
