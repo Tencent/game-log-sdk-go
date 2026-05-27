@@ -400,7 +400,7 @@ func TestGetRetriesWhenDialEndpointDeleted(t *testing.T) {
 			return false
 		}
 		defer pool.Put(conn, nil)
-		return getRemoteAddr(conn) == "127.0.0.1:2"
+		return GetRemoteAddr(conn) == "127.0.0.1:2"
 	})
 }
 
@@ -426,7 +426,7 @@ func TestNewConnPoolPartialDialFailureSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr := getRemoteAddr(conn); addr != "127.0.0.1:2" {
+	if addr := GetRemoteAddr(conn); addr != "127.0.0.1:2" {
 		t.Fatalf("Get() returned conn for %q, want 127.0.0.1:2", addr)
 	}
 	pool.Put(conn, nil)

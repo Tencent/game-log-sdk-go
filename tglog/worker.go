@@ -15,6 +15,7 @@ import (
 	"github.com/tencent/game-log-sdk-go/util"
 
 	"github.com/tencent/game-log-sdk-go/bufferpool"
+	"github.com/tencent/game-log-sdk-go/connpool"
 	"github.com/tencent/game-log-sdk-go/logger"
 
 	"go.uber.org/atomic"
@@ -437,7 +438,9 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		}()
 
 		w.metrics.incError(errConnWriteFailed.getStrCode())
-		w.log.Error("send batch failed, err: ", e, ", inCallback: ", inCallback, ", logNum:", len(b.dataReqs))
+		w.log.Error("send batch failed, err: ", e, ", inCallback: ", inCallback,
+			", logNum:", len(b.dataReqs), ", workerID:", w.index,
+			", batchID:", b.batchID, ", serverAddr:", b.lastSendServerAddr)
 
 		// 已经处于关闭状态
 		if w.getState() == stateClosed {
@@ -470,8 +473,10 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
 	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
 	conn := w.getConn()
+	// 记录本次发送的目标地址，用于失败/重试/超时日志定位。在发送前记录，避免回调里 conn 为 nil（如 UDP）拿不到地址。
+	b.lastSendServerAddr = connpool.GetRemoteAddr(conn)
 	if b.retries > 0 {
-		w.log.Debug("retry batch to conn:", conn.RemoteAddr(), ", workerID:", w.index,
+		w.log.Debug("retry batch to conn:", b.lastSendServerAddr, ", workerID:", w.index,
 			", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
 	}
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
@@ -574,7 +579,8 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
 	// 重试
 	w.metrics.incRetry(w.indexStr)
-	w.log.Debug("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID)
+	w.log.Debug("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID,
+		", retries:", batch.retries, ", lastServerAddr:", batch.lastSendServerAddr)
 	w.sendBatch(batch, retryOnFail)
 }
 
@@ -592,7 +598,9 @@ func (w *worker) handleSendTimeout() {
 	// 这里可能会比较低效，或许需要一个带排序且能够O(1)查找的数据结构
 	for batchID, batch := range w.unackedBatches {
 		if time.Since(batch.lastSendTime) > w.options.SendTimeout {
-			// w.log.Debug("worker[", w.index, "] send timeout, resend it now:", batch.batchID, "batchID:", batchID)
+			w.log.Warn("worker[", w.index, "] send timeout, resend it now, batchID:", batchID,
+				", lastSendTime:", batch.lastSendTime.UnixMilli(), ", now:", time.Now().UnixMilli(),
+				", timeout option:", w.options.SendTimeout, ", serverAddr:", batch.lastSendServerAddr)
 			// 放入重试队列
 			// w.retryBatches <- batch
 			w.backoffRetry(context.Background(), batch)
@@ -656,7 +664,7 @@ func (w *worker) handleSendHeartbeat() {
 
 	onErr := func(c gnet.Conn, e error, inCallback bool) {
 		w.metrics.incError(errConnWriteFailed.getStrCode())
-		w.log.Error("send heartbeat failed, err:", e)
+		w.log.Error("send heartbeat failed, err:", e, ", serverAddr:", connpool.GetRemoteAddr(c))
 		if inCallback {
 			// 不能在gnet的异步回调中触发连接更新，更新连接有可能创建新连接，创建新连接时调用dial函数因为和回调是同一个协程，会死锁阻塞
 			w.updateConnAsync(errConnWriteFailed)
@@ -714,6 +722,8 @@ func (w *worker) handleRsp(rsp *batchRsp) {
 	if rsp.code == 0 {
 		batch.done(nil)
 	} else {
+		w.log.Warn("send succeed but got error code:", rsp.code, ", msg:", rsp.msg,
+			", batchID:", batchID, ", workerID:", w.index, ", serverAddr:", batch.lastSendServerAddr)
 		batch.done(errServerError)
 	}
 

@@ -443,7 +443,7 @@ func (p *connPool) handleGet(reply chan getResult) {
 
 	for len(p.idleConns) > 0 {
 		conn := p.popIdleConn()
-		addr := getRemoteAddr(conn)
+		addr := GetRemoteAddr(conn)
 		if p.isConnUsable(conn, addr) {
 			reply <- getResult{conn: conn}
 			return
@@ -492,7 +492,7 @@ func (p *connPool) handleDialResult(addr string, conn gnet.Conn, err error, repl
 		return
 	}
 
-	connAddr := getRemoteAddr(conn)
+	connAddr := GetRemoteAddr(conn)
 	if connAddr == "" {
 		connAddr = addr
 	}
@@ -515,7 +515,7 @@ func (p *connPool) handleDialResult(addr string, conn gnet.Conn, err error, repl
 }
 
 func (p *connPool) handleConnClosed(conn gnet.Conn, err error) {
-	addr := getRemoteAddr(conn)
+	addr := GetRemoteAddr(conn)
 	if addr != "" && err != nil {
 		p.markUnavailable(addr)
 	}
@@ -695,7 +695,7 @@ func (p *connPool) putConn(conn gnet.Conn, err error, isNewConn bool) {
 		return
 	}
 
-	addr := getRemoteAddr(conn)
+	addr := GetRemoteAddr(conn)
 	if addr == "" {
 		p.log.Error("remote address is nil, it is closed, stop putting")
 		CloseConn(conn, defaultConnCloseDelay)
@@ -816,7 +816,7 @@ func (p *connPool) popIdleConn() gnet.Conn {
 
 func (p *connPool) closeIdleConns() {
 	for _, conn := range p.idleConns {
-		addr := getRemoteAddr(conn)
+		addr := GetRemoteAddr(conn)
 		p.closeCountedConn(conn, addr, 0)
 	}
 	p.idleConns = nil
@@ -837,7 +837,7 @@ func (p *connPool) removeIdleConn(target gnet.Conn) {
 func (p *connPool) removeDeletedEndpointConns() {
 	left := make([]gnet.Conn, 0, len(p.idleConns))
 	for _, conn := range p.idleConns {
-		addr := getRemoteAddr(conn)
+		addr := GetRemoteAddr(conn)
 		if _, ok := p.endpointMap[addr]; !ok {
 			p.log.Warn("endpoint deleted, close its connection, addr:", addr)
 			p.closeCountedConn(conn, addr, defaultConnCloseDelay)
@@ -876,7 +876,12 @@ func (p *connPool) markUnavailable(ep string) {
 	}
 }
 
-func getRemoteAddr(conn gnet.Conn) string {
+// GetRemoteAddr returns the remote address string of a gnet.Conn for logging.
+// It prefers conn.RemoteAddr() and falls back to the dial-time Endpoint stored
+// in ConnContext when RemoteAddr is not available (e.g. some UDP cases or a
+// conn that has already been closed by the peer). Returns "" if no address can
+// be derived.
+func GetRemoteAddr(conn gnet.Conn) string {
 	if conn == nil {
 		return ""
 	}
@@ -902,7 +907,7 @@ func (p *connPool) cleanExpiredConns() {
 	left := make([]gnet.Conn, 0, len(p.idleConns))
 	for _, conn := range p.idleConns {
 		if p.expired(conn) {
-			addr := getRemoteAddr(conn)
+			addr := GetRemoteAddr(conn)
 			p.log.Debug("connection expired, close it, addr:", addr, ", err:", nil)
 			p.closeCountedConn(conn, addr, defaultConnCloseDelay)
 			p.startDial(addr, nil)
@@ -1083,7 +1088,7 @@ func (p *connPool) removeEndpointConn(addr string, count int) {
 	left := make([]gnet.Conn, 0, len(p.idleConns))
 	removed := 0
 	for _, conn := range p.idleConns {
-		connAddr := getRemoteAddr(conn)
+		connAddr := GetRemoteAddr(conn)
 		if connAddr == addr && removed < count {
 			p.log.Debug("reducing connection for addr: ", addr)
 			p.closeCountedConn(conn, addr, defaultConnCloseDelay)

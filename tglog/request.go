@@ -89,19 +89,20 @@ type batchCallback func()
 
 // batchReq is batch request
 type batchReq struct {
-	pool         *sync.Pool
-	batchID      string
-	options      *Options
-	dataReqs     []*sendDataReq
-	dataSize     int
-	batchTime    time.Time
-	lastSendTime time.Time
-	retries      int
-	bufferPool   bufferpool.BufferPool
-	buffer       *bytes.Buffer
-	bytePool     bufferpool.BytePool
-	callback     batchCallback
-	metrics      *metrics
+	pool               *sync.Pool
+	batchID            string
+	options            *Options
+	dataReqs           []*sendDataReq
+	dataSize           int
+	batchTime          time.Time
+	lastSendTime       time.Time
+	lastSendServerAddr string
+	retries            int
+	bufferPool         bufferpool.BufferPool
+	buffer             *bytes.Buffer
+	bytePool           bufferpool.BytePool
+	callback           batchCallback
+	metrics            *metrics
 }
 
 // append appends data request to a batch request
