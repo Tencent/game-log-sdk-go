@@ -475,8 +475,7 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// 记录本次发送的目标地址，用于失败/重试/超时日志定位。在发送前记录，避免回调里 conn 为 nil（如 UDP）拿不到地址。
 	b.lastSendServerAddr = connpool.GetRemoteAddr(conn)
 	if b.retries > 0 {
-		w.log.Debug("retry batch to conn:", b.lastSendServerAddr, ", workerID:", w.index,
-			", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
+		w.log.Debug("retry batch to conn:", b.lastSendServerAddr, ", workerID:", w.index, ", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
 	}
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
 		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
