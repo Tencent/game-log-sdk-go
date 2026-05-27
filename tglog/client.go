@@ -434,11 +434,11 @@ func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
 		}
 
 		length, payloadOffset, payloadOffsetEnd, err := c.framer.ReadFrame(buf)
-		if errors.Is(err, framer.ErrIncompleteFrame) {
-			return gnet.None
-		}
-
 		if err != nil {
+			if errors.Is(err, framer.ErrIncompleteFrame) {
+				return gnet.None
+			}
+
 			c.metrics.incError(errConnReadFailed.getStrCode())
 			c.log.Error("invalid packet from stream connection, close it, err:", err)
 			// 读失败，关闭连接
