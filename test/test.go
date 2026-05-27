@@ -8,13 +8,13 @@ import (
 	"net/http"
 	_ "net/http/pprof" // import pprof handlers
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap/zapcore"
 
 	"github.com/juju/ratelimit"
-	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/tencent/game-log-sdk-go/tglog"

@@ -3,11 +3,11 @@ package tglog_test
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tencent/game-log-sdk-go/tglog"
-	"go.uber.org/atomic"
 )
 
 func ExampleClient_Send() {

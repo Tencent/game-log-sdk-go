@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"runtime/debug"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/panjf2000/gnet/v2"
@@ -17,8 +18,6 @@ import (
 	"github.com/tencent/game-log-sdk-go/bufferpool"
 	"github.com/tencent/game-log-sdk-go/connpool"
 	"github.com/tencent/game-log-sdk-go/logger"
-
-	"go.uber.org/atomic"
 )
 
 const (
@@ -315,7 +314,7 @@ func (w *worker) send(ctx context.Context, msg Message) error {
 	var err error
 
 	// 防止竞争写（实际上响应和请求目前在一个协程中，不存在竞争）
-	isDone := atomic.NewBool(false)
+	isDone := &atomic.Bool{}
 	doneCh := make(chan struct{})
 
 	w.doSendAsync(ctx, msg, func(msg Message, e error) {
@@ -787,7 +786,8 @@ func (w *worker) handleClose(req *closeReq) {
 	// 在修改w.unackedBatches，在这里修改它是安全的
 
 	// 获取剩余数据量
-	left := atomic.NewInt32(int32(len(w.unackedBatches)))
+	left := &atomic.Int32{}
+	left.Store(int32(len(w.unackedBatches)))
 	w.log.Debug("worker:", w.index, "unacked:", left.Load())
 
 	closeAll := func() {

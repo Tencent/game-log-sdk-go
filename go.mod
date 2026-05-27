@@ -13,7 +13,6 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/tencent/game-log-sdk-proto v0.2.0
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
-	go.uber.org/atomic v1.11.0
 	go.uber.org/zap v1.27.1
 	google.golang.org/protobuf v1.36.11
 )
@@ -33,5 +32,4 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-
 )

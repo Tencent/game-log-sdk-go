@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tencent/game-log-sdk-go/bufferpool"
@@ -20,7 +21,6 @@ import (
 	"github.com/gogo/protobuf/types"
 	"github.com/klauspost/compress/snappy"
 	v3 "github.com/tencent/game-log-sdk-proto/pbgo"
-	"go.uber.org/atomic"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
