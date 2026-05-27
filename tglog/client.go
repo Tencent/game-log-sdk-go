@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -278,6 +279,14 @@ func (c *client) initWorkers() error {
 }
 
 func (c *client) Dial(addr string, ctx any) (gnet.Conn, error) {
+	if c.options.ConnTimeout > 0 {
+		conn, err := net.DialTimeout(c.options.Network, addr, c.options.ConnTimeout)
+		if err != nil {
+			return nil, err
+		}
+		return c.netClient.EnrollContext(conn, ctx)
+	}
+
 	return c.netClient.DialContext(c.options.Network, addr, ctx)
 }
 
