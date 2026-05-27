@@ -14,14 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tencent/game-log-sdk-go/bufferpool"
-	"github.com/tencent/game-log-sdk-go/crypto"
-	"github.com/tencent/game-log-sdk-go/util"
-
 	"github.com/gogo/protobuf/types"
 	"github.com/klauspost/compress/snappy"
 	v3 "github.com/tencent/game-log-sdk-proto/pbgo"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/tencent/game-log-sdk-go/bufferpool"
+	"github.com/tencent/game-log-sdk-go/crypto"
+	"github.com/tencent/game-log-sdk-go/util"
 )
 
 var (
