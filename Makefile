@@ -7,7 +7,7 @@ all :
 	golint -set_exit_status ./... || exit 2
 
 	rm -rf test/test
-	GOOS=linux go build -o test/test test/test.go
+	GOOS=linux go build -race -o test/test test/test.go
 
 clean :
 
