@@ -274,7 +274,12 @@ func (p *connPool) OnConnClosed(conn gnet.Conn, err error) {
 		return
 	}
 
-	cmd := poolCmd{kind: poolCmdConnClosed, conn: conn, err: err}
+	// Capture the remote address here, while still running synchronously inside
+	// gnet's OnClose callback. As soon as OnClose returns, gnet's event loop
+	// calls (*conn).release(), which nils out the conn's ctx/remoteAddr fields.
+	// Reading them later on the pool goroutine would be a data race, so we pass
+	// the address through the command instead of re-deriving it from the conn.
+	cmd := poolCmd{kind: poolCmdConnClosed, conn: conn, err: err, addr: GetRemoteAddr(conn)}
 	p.enqueue(cmd, nil)
 }
 
@@ -371,7 +376,7 @@ func (p *connPool) handleCmd(cmd poolCmd) bool {
 	case poolCmdUpdateEndpoints:
 		p.handleUpdateEndpoints(cmd.all, cmd.add, cmd.del)
 	case poolCmdConnClosed:
-		p.handleConnClosed(cmd.conn, cmd.err)
+		p.handleConnClosed(cmd.conn, cmd.addr, cmd.err)
 	case poolCmdDialResult:
 		p.handleDialResult(cmd.addr, cmd.conn, cmd.err, cmd.getReply)
 	case poolCmdNumPooled:
@@ -514,8 +519,11 @@ func (p *connPool) handleDialResult(addr string, conn gnet.Conn, err error, repl
 	p.storeIdleConn(conn, connAddr)
 }
 
-func (p *connPool) handleConnClosed(conn gnet.Conn, err error) {
-	addr := GetRemoteAddr(conn)
+// handleConnClosed removes a closed conn from the pool. addr is captured in
+// OnConnClosed before gnet releases the conn; it must not be re-derived from the
+// conn here (see OnConnClosed). decEndpointConnCount falls back to the dial-time
+// address keyed by the conn pointer when addr is empty.
+func (p *connPool) handleConnClosed(conn gnet.Conn, addr string, err error) {
 	if addr != "" && err != nil {
 		p.markUnavailable(addr)
 	}

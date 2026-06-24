@@ -74,6 +74,16 @@ type mockConn struct {
 	closed atomic.Bool
 }
 
+// release mimics gnet's (*conn).release(), which nils out ctx/remoteAddr right
+// after OnClose returns. It writes the fields WITHOUT synchronization, exactly
+// like the real gnet conn, so that any unsynchronized read of the same fields by
+// the pool goroutine is reported by the race detector. Used to reproduce the
+// data race in test/t.log.
+func (c *mockConn) release() {
+	c.remote = ""
+	c.ctx = nil
+}
+
 func (c *mockConn) Read([]byte) (int, error)                    { return 0, io.EOF }
 func (c *mockConn) Write([]byte) (int, error)                   { return 0, nil }
 func (c *mockConn) WriteTo(io.Writer) (int64, error)            { return 0, nil }
@@ -356,6 +366,57 @@ func TestCloseDrainsQueuedDialResults(t *testing.T) {
 	}
 
 	waitFor(t, func() bool { return queuedConn.closed.Load() })
+}
+
+// TestOnConnClosedRaceWithRelease reproduces the data race reported in
+// test/t.log: gnet's event loop calls (*conn).release() (nilling ctx/remoteAddr)
+// as soon as OnClose returns, while the pool goroutine processes the conn-closed
+// command. OnConnClosed must capture the address synchronously and never read the
+// conn's fields again on the pool goroutine. Run with -race to detect regressions.
+func TestOnConnClosedRaceWithRelease(t *testing.T) {
+	pool, _ := newTestPool(t, []string{"127.0.0.1:1"})
+
+	for i := 0; i < 200; i++ {
+		conn := &mockConn{remote: mockAddr("127.0.0.1:1"), ctx: ConnContext{Endpoint: "127.0.0.1:1"}}
+
+		// Order matters and mirrors gnet: OnConnClosed runs synchronously inside
+		// OnClose and must capture the address BEFORE release() touches the conn.
+		// Only after OnConnClosed returns does gnet's event loop release the conn.
+		pool.OnConnClosed(conn, errConnForTest{})
+
+		// stop is closed once the pool goroutine has processed the closed event.
+		stop := make(chan struct{})
+		var releaser sync.WaitGroup
+		releaser.Add(1)
+		// Continuously release the conn (as gnet's event loop does) to keep the
+		// write side active across the whole window during which the pool
+		// goroutine might (incorrectly) read the conn's fields. With the fix the
+		// pool never reads the conn after OnConnClosed, so -race stays clean; the
+		// old code re-read conn.RemoteAddr()/Context() here and raced.
+		go func() {
+			defer releaser.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					conn.release()
+				}
+			}
+		}()
+
+		// Wait until the pool has fully processed the closed command.
+		waitFor(t, func() bool {
+			got, err := pool.Get()
+			if err != nil {
+				return false
+			}
+			pool.Put(got, nil)
+			return true
+		})
+		close(stop)
+		releaser.Wait()
+	}
 }
 
 func TestOnConnClosedDoesNotDoubleDecrement(t *testing.T) {
