@@ -2,6 +2,13 @@ module github.com/tencent/game-log-sdk-go
 
 go 1.25.0
 
+retract (
+	// data race
+	v0.6.0
+	// early test versions
+	[v0.1.0, v0.5.3]
+)
+
 require (
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/gogo/protobuf v1.3.2
