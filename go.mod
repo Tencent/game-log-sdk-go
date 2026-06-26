@@ -5,7 +5,7 @@ go 1.25.0
 retract (
 	// data race
 	v0.6.0
-	// early test versions
+	// early old and bug versions
 	[v0.1.0, v0.5.3]
 )
 
