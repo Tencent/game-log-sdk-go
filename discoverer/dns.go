@@ -176,10 +176,18 @@ func (d *dnsDiscoverer) lookup() {
 		d.log.Infof("update domain host list %s: %v", d.domain, allHostStr)
 	}
 
-	d.RLock()
-	defer d.RUnlock()
 	if len(addEndpoints) > 0 || len(delEndpoints) > 0 {
+		// 先在持锁时复制 handler 列表，释放锁后再回调，避免持锁回调外部代码：
+		// 若某个 handler 在 OnEndpointUpdate 里再调用 discoverer 的 AddEventHandler/
+		// DelEventHandler/GetEndpoints（需要 Lock/RLock），同一 goroutine 重入 RWMutex 会死锁。
+		d.RLock()
+		handlers := make([]EventHandler, 0, len(d.eventHandlers))
 		for h := range d.eventHandlers {
+			handlers = append(handlers, h)
+		}
+		d.RUnlock()
+
+		for _, h := range handlers {
 			h.OnEndpointUpdate(allEndpoints, addEndpoints, delEndpoints)
 		}
 	}
