@@ -453,8 +453,12 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		if inCallback {
 			// 不能在gnet的异步回调中触发连接更新，更新连接有可能创建新连接，创建新连接时调用dial函数因为和回调是同一个协程，会死锁阻塞
 			w.updateConnAsync(errConnWriteFailed)
-			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传
-			w.sendFailedBatches <- &sendFailedBatchReq{batch: b, retry: retryOnFail}
+			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传。
+			// 检查 state 与发送之间存在 TOCTOU 窗口，sendFailedBatches 可能已被 closeAll() 关闭，
+			// safeSend 兜底 panic；发送失败说明已关闭，done 掉 batch 释放资源（done 已幂等）。
+			if !safeSend(w, w.sendFailedBatches, &sendFailedBatchReq{batch: b, retry: retryOnFail}) {
+				b.done(errConnWriteFailed)
+			}
 			return
 		}
 
@@ -563,9 +567,13 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 				return
 			}
 
-			// 放入重试队列
+			// 放入重试队列。检查 state 与发送之间存在 TOCTOU 窗口，retryBatches 可能已被
+			// closeAll() 关闭，safeSend 兜底 panic；发送失败说明已关闭，done 掉 batch 释放资源
+			// （done 已幂等，重复调用安全）。
 			w.log.Debug("put to retry...")
-			w.retryBatches <- batch
+			if !safeSend(w, w.retryBatches, batch) {
+				batch.done(errSendTimeout)
+			}
 		case <-ctx.Done():
 			// 进程退出
 			w.log.Warn("app exit when we are going to retry")
@@ -698,12 +706,29 @@ func (w *worker) handleSendHeartbeat() {
 
 }
 
+// safeSend 向 ch 发送 v，并用 recover 兜底"向已关闭 channel 发送"导致的 panic。
+// 背景：onRsp/onErr(inCallback)/backoffRetry 都在 worker 主事件循环之外的协程里执行，
+// 它们"检查 getState()==stateClosed 再发送"与 handleClose 的 closeAll() 关闭 channel
+// 之间存在 TOCTOU 窗口，检查通过后 channel 可能已被关闭。此时直接发送会 panic。
+// 关闭期到达的这部分数据本就无法再被处理，捕获 panic 后丢弃并记录即可，返回是否发送成功。
+func safeSend[T any](w *worker, ch chan T, v T) (sent bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			// 关闭期向已关闭 channel 发送，丢弃该数据
+			w.log.Warn("send to closed channel during close, drop it, workerID:", w.index, ", recover:", rec)
+			sent = false
+		}
+	}()
+	ch <- v
+	return true
+}
+
 func (w *worker) onRsp(rsp *batchRsp) {
 	// 已经处于关闭状态
 	if w.getState() == stateClosed {
 		return
 	}
-	w.responseBatches <- rsp
+	safeSend(w, w.responseBatches, rsp)
 }
 
 func (w *worker) handleRsp(rsp *batchRsp) {
