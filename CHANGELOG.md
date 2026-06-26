@@ -1,3 +1,19 @@
+## 0.6.2(2026-06-26)
+
+> 说明：建议升级到此版本，修复了若干并发安全问题，运行更稳定。
+
+特性：
+
+改进：
+
+Bug修复：
+- 修复`getWorker`使用`Load`+`Add`非原子组合的问题，并发调用可能命中同一worker加剧热点，改为`Add(1)-1`的fetch-and-increment原子语义；
+- 修复同一`batchReq`在超时重传与迟到响应竞态下被重复`done`的问题，导致buffer双重归还、对已被pool复用的对象回调、semaphore多次Release，新增`finished`幂等标志；
+- 修复关闭期向已关闭channel发送导致panic的问题：`onRsp`/`onErr(inCallback)`/`backoffRetry`三个并发写入点在"检查stateClosed再发送"与`closeAll()`关闭channel之间存在TOCTOU窗口，新增泛型辅助`safeSend`用recover兜底，关闭期到达的数据丢弃并记日志；
+- 修复服务发现持锁回调handler导致重入死锁的问题：`lookup()`原先持有RLock遍历`eventHandlers`调用`OnEndpointUpdate`，若handler在回调里再调用`AddEventHandler`/`DelEventHandler`/`GetEndpoints`，同一goroutine重入RWMutex会死锁，改为持锁复制handler列表后释放锁再回调；
+
+
+
 ## 0.6.1(2026-06-24)
 
 > 说明：建议升级到此版本，以获取更稳定的连接池行为、更易排查的失败日志，以及更少的外部依赖。
