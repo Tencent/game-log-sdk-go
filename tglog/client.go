@@ -311,9 +311,11 @@ func (c *client) SendAsync(ctx context.Context, msg Message, cb Callback) {
 }
 
 func (c *client) getWorker() (*worker, error) {
-	index := c.curWorkerIndex.Load()
+	// 用原子自增的返回值作为 index，保证并发调用各自拿到不同的序号，避免 Load+Add
+	// 两步非原子组合导致多个调用命中同一 worker 加剧热点。Add(1) 返回自增后的值，减 1
+	// 得到本次应使用的序号（fetch-and-increment 语义）。
+	index := c.curWorkerIndex.Add(1) - 1
 	w := c.workers[index%uint64(len(c.workers))]
-	c.curWorkerIndex.Add(1)
 
 	if w.available() {
 		return w, nil
