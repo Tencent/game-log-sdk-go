@@ -89,7 +89,13 @@ type batchCallback func()
 
 // batchReq is batch request
 type batchReq struct {
-	pool               *sync.Pool
+	pool *sync.Pool
+	// finished 是幂等标志，防止同一个 batch 被 done 多次。
+	// 在超时重传与迟到响应竞态下，同一个 *batchReq 可能被重复 done，
+	// 导致 buffer 双重归还、对已被 pool 复用的对象回调、semaphore 多次 Release。
+	// 所有 done() 调用都发生在 worker 单一事件循环主协程内（串行），故用普通 bool 即可，无需原子。
+	// 从 batchPool 取出时随 *batch = batchReq{...} 自动复位为 false。
+	finished           bool
 	batchID            string
 	options            *Options
 	dataReqs           []*sendDataReq
@@ -113,6 +119,12 @@ func (b *batchReq) append(r *sendDataReq) {
 
 // done done batch request
 func (b *batchReq) done(err error) {
+	// 幂等保护：已经 done 过的 batch 直接返回，避免重复释放资源 / 重复回调。
+	if b.finished {
+		return
+	}
+	b.finished = true
+
 	errorCode := getErrorCode(err)
 	for i, req := range b.dataReqs {
 		req.done(err, errorCode)
