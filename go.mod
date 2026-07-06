@@ -4,7 +4,7 @@ go 1.25.0
 
 retract (
 	// data race
-	v0.6.0
+	[v0.6.0, v0.6.2]
 	// early old and bug versions
 	[v0.1.0, v0.5.3]
 )
@@ -14,9 +14,9 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/uuid v1.6.0
 	github.com/juju/ratelimit v1.0.2
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.19.0
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
-	github.com/panjf2000/gnet/v2 v2.9.8
+	github.com/panjf2000/gnet/v2 v2.10.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/tencent/game-log-sdk-proto v0.2.0
 	github.com/zentures/cityhash v0.0.0-20131128155616-cdd6a94144ab
@@ -36,7 +36,7 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

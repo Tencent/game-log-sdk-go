@@ -760,7 +760,7 @@ func (p *connPool) expired(conn gnet.Conn) bool {
 		return false
 	}
 
-	ctx := conn.Context()
+	ctx := conn.SafeContext()
 	if ctx == nil {
 		return false
 	}
@@ -885,20 +885,14 @@ func (p *connPool) markUnavailable(ep string) {
 }
 
 // GetRemoteAddr returns the remote address string of a gnet.Conn for logging.
-// It prefers conn.RemoteAddr() and falls back to the dial-time Endpoint stored
-// in ConnContext when RemoteAddr is not available (e.g. some UDP cases or a
-// conn that has already been closed by the peer). Returns "" if no address can
-// be derived.
+// It reads the dial-time Endpoint stored in ConnContext via SafeContext().
+// Returns "" if no address can be derived.
 func GetRemoteAddr(conn gnet.Conn) string {
 	if conn == nil {
 		return ""
 	}
 
-	addr := conn.RemoteAddr()
-	if addr != nil {
-		return addr.String()
-	}
-	ctx := conn.Context()
+	ctx := conn.SafeContext()
 	if ctx == nil {
 		return ""
 	}

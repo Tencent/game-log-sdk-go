@@ -35,6 +35,7 @@ func (d *mockDialer) Dial(addr string, ctx any) (gnet.Conn, error) {
 		return nil, err
 	}
 	conn := &mockConn{remote: mockAddr(addr), ctx: ctx}
+	conn.SetSafeContext(ctx)
 	d.conns = append(d.conns, conn)
 	return conn, nil
 }
@@ -69,9 +70,10 @@ func (a mockAddr) Network() string { return "tcp" }
 func (a mockAddr) String() string  { return string(a) }
 
 type mockConn struct {
-	remote mockAddr
-	ctx    any
-	closed atomic.Bool
+	remote  mockAddr
+	ctx     any
+	safeCtx atomic.Value
+	closed  atomic.Bool
 }
 
 // release mimics gnet's (*conn).release(), which nils out ctx/remoteAddr right
@@ -129,6 +131,8 @@ func (c *mockConn) Close() error {
 func (c *mockConn) SetDeadline(time.Time) error      { return nil }
 func (c *mockConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *mockConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *mockConn) SafeContext() any                 { return c.safeCtx.Load() }
+func (c *mockConn) SetSafeContext(ctx any)           { c.safeCtx.Store(ctx) }
 
 func newTestPool(t *testing.T, endpoints []string) (*connPool, *mockDialer) {
 	t.Helper()
@@ -502,5 +506,104 @@ func TestNewConnPoolAllDialFailuresReturnError(t *testing.T) {
 	if err == nil {
 		pool.Close()
 		t.Fatal("NewConnPool succeeded when every endpoint failed to dial")
+	}
+}
+
+// TestPutConnRaceWithReleaseOnContext reproduces race.log Race 1:
+// putConn → expired() → conn.Context() races with gnet's release() writing ctx=nil.
+// This path is only exercised when maxConnLifetime > 0, so we create the pool
+// with a positive lifetime. Run with -race to confirm the detector fires.
+func TestPutConnRaceWithReleaseOnContext(t *testing.T) {
+	dialer := &mockDialer{failFor: make(map[string]error)}
+	// Use a large maxConnLifetime so expired() always reads Context() but never
+	// actually expires the conn; we just need the read to happen.
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	for i := 0; i < 200; i++ {
+		conn := &mockConn{remote: mockAddr("127.0.0.1:1"), ctx: ConnContext{Endpoint: "127.0.0.1:1"}}
+
+		// Mirror the real gnet sequence:
+		//   1. Worker returns the conn to the pool via Put (poolCmdPut).
+		//      putConn() calls GetRemoteAddr then expired() → conn.Context()
+		//      on the pool goroutine.
+		//   2. gnet's event loop calls release() concurrently, writing
+		//      ctx=nil / remoteAddr="" without synchronisation.
+		//
+		// Steps 1 and 2 are the racy pair. We trigger step 1 by calling Put,
+		// then immediately start release() on a separate goroutine to race it.
+		pool.Put(conn, nil)
+
+		stop := make(chan struct{})
+		var releaser sync.WaitGroup
+		releaser.Add(1)
+		// Continuously nil out ctx (as gnet release() does) to keep the write
+		// side hot while the pool goroutine may still be inside expired().
+		go func() {
+			defer releaser.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					conn.release()
+				}
+			}
+		}()
+
+		// NumPooled() sends a synchronous poolCmdNumPooled to the pool goroutine
+		// and waits for the reply. Because cmdCh is FIFO, by the time NumPooled
+		// returns the Put command that preceded it has already been processed, so
+		// the pool goroutine is done reading conn's fields. We can then safely
+		// stop the releaser.
+		pool.NumPooled()
+		close(stop)
+		releaser.Wait()
+	}
+}
+
+// TestPutConnRaceWithReleaseOnRemoteAddr reproduces race.log Race 2:
+// putConn → GetRemoteAddr() → conn.RemoteAddr() races with gnet's release()
+// writing remoteAddr=nil. The race happens before any endpoint/expiry check.
+// Run with -race to confirm the detector fires.
+func TestPutConnRaceWithReleaseOnRemoteAddr(t *testing.T) {
+	dialer := &mockDialer{failFor: make(map[string]error)}
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	for i := 0; i < 200; i++ {
+		conn := &mockConn{remote: mockAddr("127.0.0.1:1"), ctx: ConnContext{Endpoint: "127.0.0.1:1"}}
+
+		// Put sends poolCmdPut to the pool goroutine. The goroutine will call
+		// putConn → GetRemoteAddr → conn.RemoteAddr() (read). We start a
+		// releaser goroutine immediately after to write remoteAddr concurrently.
+		pool.Put(conn, nil)
+
+		stop := make(chan struct{})
+		var releaser sync.WaitGroup
+		releaser.Add(1)
+		go func() {
+			defer releaser.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					conn.release()
+				}
+			}
+		}()
+
+		// Use NumPooled() as a FIFO barrier: by the time it returns, the
+		// preceding Put has been fully processed by the pool goroutine.
+		pool.NumPooled()
+		close(stop)
+		releaser.Wait()
 	}
 }
