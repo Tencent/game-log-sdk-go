@@ -36,6 +36,11 @@ type Dialer interface {
 	Dial(addr string, ctx any) (gnet.Conn, error)
 }
 
+// HeartbeatFunc is the callback func to send a heartbeat request
+// Because we will call this func in connpool's goroutine, you should
+// call gnet.Conn.AsyncWrite() or gnet.Conn.AsyncWritev() to send the heartbeat request.
+type HeartbeatFunc func(conn gnet.Conn)
+
 // ConnContext is the additional attributes to set to a gnet.Conn
 type ConnContext struct {
 	CreatedAt time.Time // the created time of the connection
@@ -107,7 +112,8 @@ type getResult struct {
 
 // NewConnPool news a EndpointRestrictedConnPool
 func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
-	dialer Dialer, log logger.Logger, maxConnLifetime time.Duration) (EndpointRestrictedConnPool, error) {
+	dialer Dialer, log logger.Logger, maxConnLifetime time.Duration,
+	heartbeatFunc HeartbeatFunc) (EndpointRestrictedConnPool, error) {
 	if len(initEndpoints) == 0 {
 		return nil, ErrInitEndpointEmpty
 	}
@@ -159,6 +165,7 @@ func NewConnPool(initEndpoints []string, connsPerEndpoint, size int,
 		endpointConnCounts: make(map[string]int),
 		pendingDials:       make(map[string]int),
 		countedConns:       make(map[gnet.Conn]string),
+		heartbeatFunc:      heartbeatFunc,
 	}
 
 	if err := pool.initConns(requiredConnNum); err != nil {
@@ -192,6 +199,7 @@ type connPool struct {
 	endpointConnCounts map[string]int
 	pendingDials       map[string]int
 	countedConns       map[gnet.Conn]string
+	heartbeatFunc      HeartbeatFunc
 }
 
 func (p *connPool) Get() (gnet.Conn, error) {
@@ -340,6 +348,13 @@ func (p *connPool) innerWork() {
 	reBalanceTicker := time.NewTicker(defaultConnCloseDelay + 30*time.Second)
 	defer reBalanceTicker.Stop()
 
+	var heartbeatChan <-chan time.Time
+	if p.heartbeatFunc != nil {
+		heartbeatTicker := time.NewTicker(1 * time.Minute)
+		defer heartbeatTicker.Stop()
+		heartbeatChan = heartbeatTicker.C
+	}
+
 	var cleanExpiredConnChan <-chan time.Time
 	if p.maxConnLifetime > 0 {
 		cleanExpiredConnTicker := time.NewTicker(1 * time.Minute)
@@ -361,6 +376,8 @@ func (p *connPool) innerWork() {
 			p.dump()
 		case <-reBalanceTicker.C:
 			p.rebalance()
+		case <-heartbeatChan:
+			p.sendHeartbeat()
 		case <-cleanExpiredConnChan:
 			p.cleanExpiredConns()
 		}
@@ -902,6 +919,28 @@ func GetRemoteAddr(conn gnet.Conn) string {
 		return ""
 	}
 	return connCtx.Endpoint
+}
+
+func (p *connPool) sendHeartbeat() {
+	if p.heartbeatFunc == nil {
+		return
+	}
+
+	for _, conn := range p.idleConns {
+		if conn == nil {
+			continue
+		}
+
+		func(conn gnet.Conn) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					p.log.Error("panic when send heartbeat:", rec)
+					p.log.Error(string(debug.Stack()))
+				}
+			}()
+			p.heartbeatFunc(conn)
+		}(conn)
+	}
 }
 
 func (p *connPool) cleanExpiredConns() {

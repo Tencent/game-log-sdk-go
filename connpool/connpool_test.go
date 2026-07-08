@@ -137,7 +137,7 @@ func (c *mockConn) SetSafeContext(ctx any)           { c.safeCtx.Store(ctx) }
 func newTestPool(t *testing.T, endpoints []string) (*connPool, *mockDialer) {
 	t.Helper()
 	dialer := &mockDialer{failFor: make(map[string]error)}
-	pool, err := NewConnPool(endpoints, 1, 8, dialer, logger.Std(), -1)
+	pool, err := NewConnPool(endpoints, 1, 8, dialer, logger.Std(), -1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,9 +287,50 @@ func TestGetAfterClose(t *testing.T) {
 	}
 }
 
+func TestSendHeartbeatToIdleConns(t *testing.T) {
+	var heartbeatCount atomic.Int32
+	dialer := &mockDialer{failFor: make(map[string]error)}
+	pool, err := NewConnPool(
+		[]string{"127.0.0.1:1", "127.0.0.1:2"},
+		1,
+		8,
+		dialer,
+		logger.Std(),
+		-1,
+		func(conn gnet.Conn) {
+			if conn == nil {
+				t.Error("heartbeat received nil connection")
+				return
+			}
+			heartbeatCount.Add(1)
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pool.(*connPool)
+	t.Cleanup(p.Close)
+
+	p.sendHeartbeat()
+	if got := heartbeatCount.Load(); got != int32(p.NumPooled()) {
+		t.Fatalf("heartbeat count = %d, want %d", got, p.NumPooled())
+	}
+
+	conn, err := p.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeatCount.Store(0)
+	p.sendHeartbeat()
+	if got := heartbeatCount.Load(); got != int32(p.NumPooled()) {
+		t.Fatalf("heartbeat count after Get = %d, want %d", got, p.NumPooled())
+	}
+	p.Put(conn, nil)
+}
+
 func TestCloseDuringDialClosesDialResult(t *testing.T) {
 	dialer := &mockDialer{failFor: make(map[string]error)}
-	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 1, dialer, logger.Std(), -1)
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 1, dialer, logger.Std(), -1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +372,7 @@ func TestCloseDuringDialClosesDialResult(t *testing.T) {
 // commands already queued in cmdCh when Close runs are not leaked.
 func TestCloseDrainsQueuedDialResults(t *testing.T) {
 	dialer := &mockDialer{failFor: make(map[string]error)}
-	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 1, dialer, logger.Std(), -1)
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 1, dialer, logger.Std(), -1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +518,7 @@ func TestNewConnPoolPartialDialFailureSucceeds(t *testing.T) {
 	dialer := &mockDialer{failFor: map[string]error{
 		"127.0.0.1:1": errConnForTest{},
 	}}
-	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1)
+	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1, nil)
 	if err != nil {
 		t.Fatalf("NewConnPool returned err with one bad endpoint: %v", err)
 	}
@@ -502,7 +543,7 @@ func TestNewConnPoolAllDialFailuresReturnError(t *testing.T) {
 		"127.0.0.1:1": errConnForTest{},
 		"127.0.0.1:2": errConnForTest{},
 	}}
-	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1)
+	pool, err := NewConnPool([]string{"127.0.0.1:1", "127.0.0.1:2"}, 1, 8, dialer, logger.Std(), -1, nil)
 	if err == nil {
 		pool.Close()
 		t.Fatal("NewConnPool succeeded when every endpoint failed to dial")
@@ -517,7 +558,7 @@ func TestPutConnRaceWithReleaseOnContext(t *testing.T) {
 	dialer := &mockDialer{failFor: make(map[string]error)}
 	// Use a large maxConnLifetime so expired() always reads Context() but never
 	// actually expires the conn; we just need the read to happen.
-	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), 24*time.Hour)
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), 24*time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +612,7 @@ func TestPutConnRaceWithReleaseOnContext(t *testing.T) {
 // Run with -race to confirm the detector fires.
 func TestPutConnRaceWithReleaseOnRemoteAddr(t *testing.T) {
 	dialer := &mockDialer{failFor: make(map[string]error)}
-	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), -1)
+	pool, err := NewConnPool([]string{"127.0.0.1:1"}, 1, 8, dialer, logger.Std(), -1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
