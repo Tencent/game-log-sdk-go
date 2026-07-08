@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/panjf2000/gnet/v2"
-	v3 "github.com/tencent/game-log-sdk-proto/pbgo"
 
 	"github.com/tencent/game-log-sdk-go/syncx"
 	"github.com/tencent/game-log-sdk-go/util"
@@ -21,7 +20,6 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval = 60
 	defaultMapCleanInterval  = 20
 	defaultMapCleanThreshold = 500000
 )
@@ -113,7 +111,6 @@ type worker struct {
 	responseBatches    chan *batchRsp           // 响应管道
 	batchTimeoutTicker *time.Ticker             // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
 	sendTimeoutTicker  *time.Ticker             // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
-	heartbeatTicker    *time.Ticker             // 心跳定时器
 	mapCleanTicker     *time.Ticker             // map清理定时器
 	updateConnTicker   *time.Ticker             // 更新连接定时器，定时从连接池获取连接替换现有连接
 	unackedBatchCount  int                      // map清理计数器
@@ -145,7 +142,6 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		responseBatches:    make(chan *batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
 		sendTimeoutTicker:  time.NewTicker(sendTimeout),
-		heartbeatTicker:    time.NewTicker(defaultHeartbeatInterval * time.Second),
 		mapCleanTicker:     time.NewTicker(defaultMapCleanInterval * time.Second),
 		updateConnTicker:   time.NewTicker(time.Duration(30+rand.Intn(50)) * time.Second), // 随机一点
 		metrics:            cli.metrics,
@@ -158,7 +154,6 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 	// V1协议没有响应，不需要这些定时器
 	if opts.isV1 {
 		w.sendTimeoutTicker.Stop()
-		w.heartbeatTicker.Stop()
 		w.mapCleanTicker.Stop()
 	}
 	// 更新为初始状态
@@ -220,9 +215,6 @@ func (w *worker) start() {
 			case <-w.mapCleanTicker.C:
 				// 定时清理unackedBatches，go语言里map会不停的膨胀
 				w.handleCleanMap()
-			case <-w.heartbeatTicker.C:
-				// 定时发送心跳
-				w.handleSendHeartbeat()
 			case <-w.updateConnTicker.C:
 				// 更新连接
 				w.handleUpdateConn()
@@ -635,75 +627,6 @@ func (w *worker) handleCleanMap() {
 	w.unackedBatches = newMap
 	// 计数器清
 	w.unackedBatchCount = 0
-}
-
-func (w *worker) handleSendHeartbeat() {
-	// w.log.Debug("worker[", w.index, "] handleSendHeartbeat")
-	if w.options.isV1 {
-		return
-	}
-
-	body := V3ReqPool.Get().(*v3.Req)
-	defer V3ReqPool.Put(body)
-
-	reqID := buildBatchID(w.indexStr)
-	header, body, err := BuildV3HeartbeatReq(
-		w.options.AppID,
-		w.options.AppName,
-		w.options.AppVer,
-		w.options.Network,
-		reqID,
-		w.options.Token,
-		w.options.TokenType,
-		nil,
-		nil,
-		body)
-	if err != nil {
-		return
-	}
-
-	bb := w.bufferPool.Get()
-	bytes, err := EncodeV3Req(header, body, w.options.NoFrameHeader, false, false, false, false, "", bb, w.options.LittleEndian)
-	if err != nil {
-		return
-	}
-
-	onErr := func(c gnet.Conn, e error, inCallback bool) {
-		w.metrics.incError(errConnWriteFailed.getStrCode())
-		w.log.Error("send heartbeat failed, err:", e, ", serverAddr:", connpool.GetRemoteAddr(c))
-		if inCallback {
-			// 不能在gnet的异步回调中触发连接更新，更新连接有可能创建新连接，创建新连接时调用dial函数因为和回调是同一个协程，会死锁阻塞
-			w.updateConnAsync(errConnWriteFailed)
-		} else {
-			w.updateConn(c, errConnWriteFailed)
-		}
-	}
-
-	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
-	conn := w.getConn()
-	err = conn.AsyncWrite(bytes, func(c gnet.Conn, e error) error {
-		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
-		if w.options.isUDP {
-			return nil
-		}
-		if e != nil {
-			onErr(c, e, true)
-		}
-		// 发送完，回收
-		w.bufferPool.Put(bb)
-		return nil
-	})
-
-	if err != nil {
-		onErr(conn, err, false)
-		// 发送失败，回收
-		w.bufferPool.Put(bb)
-	} else if w.options.isUDP {
-		// 如果是UDP，成功失败都要在conn.AsyncWrite()返回后处理，而不是在它的回调中处理
-		// 发送成功，回收
-		w.bufferPool.Put(bb)
-	}
-
 }
 
 // safeSend 向 ch 发送 v，并用 recover 兜底"向已关闭 channel 发送"导致的 panic。

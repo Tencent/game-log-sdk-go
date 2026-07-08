@@ -225,7 +225,7 @@ func (c *client) initConns() error {
 
 	// minimum connection number per endpoint is 1
 	connsPerEndpoint := int(math.Ceil(float64(c.options.WorkerNum) * 1.2 / float64(epLen)))
-	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 2048, c, c.log, c.options.MaxConnLifetime)
+	pool, err := connpool.NewConnPool(endpoints, connsPerEndpoint, 2048, c, c.log, c.options.MaxConnLifetime, c.SendHeartbeat)
 	if err != nil {
 		return err
 	}
@@ -388,6 +388,66 @@ func (c *client) OnClose(conn gnet.Conn, err error) gnet.Action {
 	}
 
 	return gnet.Close
+}
+
+func (c *client) SendHeartbeat(conn gnet.Conn) {
+	if c.options.isV1 {
+		return
+	}
+
+	body := V3ReqPool.Get().(*v3.Req)
+	defer V3ReqPool.Put(body)
+
+	reqID := buildBatchID("0")
+	header, body, err := BuildV3HeartbeatReq(
+		c.options.AppID,
+		c.options.AppName,
+		c.options.AppVer,
+		c.options.Network,
+		reqID,
+		c.options.Token,
+		c.options.TokenType,
+		nil,
+		nil,
+		body)
+	if err != nil {
+		return
+	}
+
+	bb := c.options.BufferPool.Get()
+	bytes, err := EncodeV3Req(header, body, c.options.NoFrameHeader, false, false, false, false, "", bb, c.options.LittleEndian)
+	if err != nil {
+		return
+	}
+
+	onErr := func(conn gnet.Conn, e error, inCallback bool) {
+		c.metrics.incError(errConnWriteFailed.getStrCode())
+		c.log.Error("send heartbeat failed, err:", e, ", serverAddr:", connpool.GetRemoteAddr(conn))
+	}
+
+	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
+	err = conn.AsyncWrite(bytes, func(conn gnet.Conn, e error) error {
+		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
+		if c.options.isUDP {
+			return nil
+		}
+		if e != nil {
+			onErr(conn, e, true)
+		}
+		// 发送完，回收
+		c.options.BufferPool.Put(bb)
+		return nil
+	})
+
+	if err != nil {
+		onErr(conn, err, false)
+		// 发送失败，回收
+		c.options.BufferPool.Put(bb)
+	} else if c.options.isUDP {
+		// 如果是UDP，成功失败都要在conn.AsyncWrite()返回后处理，而不是在它的回调中处理
+		// 发送成功，回收
+		c.options.BufferPool.Put(bb)
+	}
 }
 
 func (c *client) OnTraffic(conn gnet.Conn) (action gnet.Action) {
