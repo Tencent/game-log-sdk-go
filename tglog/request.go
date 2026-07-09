@@ -235,8 +235,25 @@ type batchRsp struct {
 
 // sendFailedBatchReq is the request of retry batch request
 type sendFailedBatchReq struct {
-	batch *batchReq
-	retry bool
+	batchID string
+	batch   *batchReq
+	retry   bool
+}
+
+type retryingBatch struct {
+	batch  *batchReq
+	cancel context.CancelFunc
+}
+
+type retryBatchReq struct {
+	batchID string
+	batch   *batchReq
+}
+
+type doneBatchReq struct {
+	batchID string
+	batch   *batchReq
+	err     error
 }
 
 // buildBatchID builds batch id

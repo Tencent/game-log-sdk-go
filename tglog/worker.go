@@ -93,31 +93,33 @@ func getErrorCode(err error) string {
 // CLB而不是直连RS，所以是可以接受的。（如果是直连RS，对于UPD来讲，在DNS缓存刷新的这段时间，每次发包都换一个连接也无法避免会
 // 把请求发往被下线的RS，更进一步的优化是通过响应超时/心跳超时来检测连接不可用，但是V1协议是没有响应的，也不好实现。）
 type worker struct {
-	client             *client                  // 上层client
-	index              int                      // worker id
-	indexStr           string                   // worker id 字符串格式
-	options            *Options                 // 配置
-	state              atomic.Int32             // 状态
-	log                logger.Logger            // 日志
-	conn               atomic.Value             // 连接
-	cmdChan            chan interface{}         // 命令管道
-	dataChan           chan *sendDataReq        // 数据管道
-	dataSemaphore      syncx.Semaphore          // 排队控制信号量
-	pendingBatches     map[string]*batchReq     // 待发送批次
-	unackedBatches     map[string]*batchReq     // 待确认批次
-	sendFailedBatches  chan *sendFailedBatchReq // 发送失败管道，接收batch发送失败事件
-	updateConnChan     chan error               // 更新连接管道，接收更新连接通知
-	retryBatches       chan *batchReq           // 重试管道，接收待重试的batch
-	responseBatches    chan *batchRsp           // 响应管道
-	batchTimeoutTicker *time.Ticker             // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
-	sendTimeoutTicker  *time.Ticker             // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
-	mapCleanTicker     *time.Ticker             // map清理定时器
-	updateConnTicker   *time.Ticker             // 更新连接定时器，定时从连接池获取连接替换现有连接
-	unackedBatchCount  int                      // map清理计数器
-	metrics            *metrics                 // 指标
-	bufferPool         bufferpool.BufferPool    // 缓冲池
-	bytePool           bufferpool.BytePool      // 内存池
-	stop               chan struct{}            // 是否停止
+	client             *client                   // 上层client
+	index              int                       // worker id
+	indexStr           string                    // worker id 字符串格式
+	options            *Options                  // 配置
+	state              atomic.Int32              // 状态
+	log                logger.Logger             // 日志
+	conn               atomic.Value              // 连接
+	cmdChan            chan interface{}          // 命令管道
+	dataChan           chan *sendDataReq         // 数据管道
+	dataSemaphore      syncx.Semaphore           // 排队控制信号量
+	pendingBatches     map[string]*batchReq      // 待发送批次
+	unackedBatches     map[string]*batchReq      // 待确认批次
+	retryingBatches    map[string]*retryingBatch // 重试退避中的批次
+	doneBatches        chan *doneBatchReq        // 完成管道，接收异步done batch事件
+	sendFailedBatches  chan *sendFailedBatchReq  // 发送失败管道，接收batch发送失败事件
+	updateConnChan     chan error                // 更新连接管道，接收更新连接通知
+	retryBatches       chan *retryBatchReq       // 重试管道，接收待重试的batch
+	responseBatches    chan *batchRsp            // 响应管道
+	batchTimeoutTicker *time.Ticker              // 批次超时定时器，检测批次最旧的数据是否超过指定时间，超过就算不够一批也直接发送
+	sendTimeoutTicker  *time.Ticker              // 发送超时定时器，检测批次是否超过指定时间都没收到响应，是否重传
+	mapCleanTicker     *time.Ticker              // map清理定时器
+	updateConnTicker   *time.Ticker              // 更新连接定时器，定时从连接池获取连接替换现有连接
+	unackedBatchCount  int                       // map清理计数器
+	metrics            *metrics                  // 指标
+	bufferPool         bufferpool.BufferPool     // 缓冲池
+	bytePool           bufferpool.BytePool       // 内存池
+	stop               chan struct{}             // 是否停止
 }
 
 func newWorker(cli *client, index int, opts *Options) (*worker, error) {
@@ -136,9 +138,11 @@ func newWorker(cli *client, index int, opts *Options) (*worker, error) {
 		dataSemaphore:      syncx.NewSemaphore(int32(opts.MaxPendingMessages)),
 		pendingBatches:     make(map[string]*batchReq),
 		unackedBatches:     make(map[string]*batchReq),
+		retryingBatches:    make(map[string]*retryingBatch),
+		doneBatches:        make(chan *doneBatchReq, opts.MaxPendingMessages),
 		sendFailedBatches:  make(chan *sendFailedBatchReq, opts.MaxPendingMessages),
 		updateConnChan:     make(chan error, 64),
-		retryBatches:       make(chan *batchReq, opts.MaxPendingMessages),
+		retryBatches:       make(chan *retryBatchReq, opts.MaxPendingMessages),
 		responseBatches:    make(chan *batchRsp, opts.MaxPendingMessages),
 		batchTimeoutTicker: time.NewTicker(opts.BatchingMaxPublishDelay),
 		sendTimeoutTicker:  time.NewTicker(sendTimeout),
@@ -224,8 +228,14 @@ func (w *worker) start() {
 				}
 				// 更新连接
 				w.updateConn(nil, e)
+			case batch, ok := <-w.doneBatches:
+				// 处理异步完成的批次
+				if !ok {
+					continue
+				}
+				w.doneBatch(batch.batchID, batch.batch, batch.err)
 			case batch, ok := <-w.sendFailedBatches:
-				// 处理发送成功的批次
+				// 处理发送失败的批次
 				if !ok {
 					continue
 				}
@@ -399,23 +409,32 @@ func (w *worker) handleSendData(req *sendDataReq) {
 
 func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 	// w.log.Debug("worker[", w.index, "] sendBatch")
+	batchID := b.batchID
 	// 检查重试次数是否超过最大重试次数
 	if b.retries > w.options.MaxRetries {
-		b.done(errSendTimeout)
+		w.doneBatch(batchID, b, errSendTimeout)
 		return
 	}
 
 	b.lastSendTime = time.Now()
 	_, err := b.encode()
 	if err != nil {
-		b.done(err)
+		w.doneBatch(batchID, b, err)
 		return
 	}
+
+	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
+	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
+	conn := w.getConn()
+	// 记录本次发送的目标地址，用于失败/重试/超时日志定位。在发送前记录，避免回调里 conn 为 nil（如 UDP）拿不到地址。
+	b.lastSendServerAddr = connpool.GetRemoteAddr(conn)
+	logNum := len(b.dataReqs)
+	serverAddr := b.lastSendServerAddr
 
 	onOK := func() {
 		// V1不需要响应，发送成功就认为成功
 		if w.options.isV1 {
-			b.done(nil)
+			w.doneBatch(batchID, b, nil)
 		}
 	}
 
@@ -430,12 +449,16 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 
 		w.metrics.incError(errConnWriteFailed.getStrCode())
 		w.log.Error("send batch failed, err: ", e, ", inCallback: ", inCallback,
-			", logNum:", len(b.dataReqs), ", workerID:", w.index,
-			", batchID:", b.batchID, ", serverAddr:", b.lastSendServerAddr)
+			", logNum:", logNum, ", workerID:", w.index,
+			", batchID:", batchID, ", serverAddr:", serverAddr)
 
-		// 已经处于关闭状态
-		if w.getState() == stateClosed {
-			b.done(errConnWriteFailed)
+		// 已经处于关闭状态或正在关闭
+		if w.getState() != stateReady {
+			if inCallback {
+				w.doneBatchAsync(batchID, b, errConnWriteFailed)
+			} else {
+				w.doneBatch(batchID, b, errConnWriteFailed)
+			}
 			return
 		}
 
@@ -447,9 +470,9 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 			w.updateConnAsync(errConnWriteFailed)
 			// 不同协程，放入管道传回主协程，在主协程中将请求从w.unackedBatches队列中删除并重传。
 			// 检查 state 与发送之间存在 TOCTOU 窗口，sendFailedBatches 可能已被 closeAll() 关闭，
-			// safeSend 兜底 panic；发送失败说明已关闭，done 掉 batch 释放资源（done 已幂等）。
-			if !safeSend(w, w.sendFailedBatches, &sendFailedBatchReq{batch: b, retry: retryOnFail}) {
-				b.done(errConnWriteFailed)
+			// safeSend 兜底 panic；发送失败说明已关闭，异步通知 worker 主循环 done batch。
+			if !safeSend(w, w.sendFailedBatches, &sendFailedBatchReq{batchID: batchID, batch: b, retry: retryOnFail}) {
+				w.doneBatchAsync(batchID, b, errConnWriteFailed)
 			}
 			return
 		}
@@ -457,21 +480,16 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		// 在同一个协程里，直接放入重试队列或者结束发送
 		// 网络错误，换一个连接
 		w.updateConn(c, errConnWriteFailed)
-		if retryOnFail {
+		if retryOnFail && w.getState() == stateReady {
 			// w.retryBatches <- b
 			w.backoffRetry(context.Background(), b)
 		} else {
-			b.done(errConnWriteFailed)
+			w.doneBatch(batchID, b, errConnWriteFailed)
 		}
 	}
 
-	// w.log.Debug("worker[", w.index, "] write to:", conn.RemoteAddr())
-	// 非常重要：我们使用的是gnet异步框架，在不同的协程中发送数据，必须调用AsyncWrite，Write只能在gnet.OnTraffic()中调用
-	conn := w.getConn()
-	// 记录本次发送的目标地址，用于失败/重试/超时日志定位。在发送前记录，避免回调里 conn 为 nil（如 UDP）拿不到地址。
-	b.lastSendServerAddr = connpool.GetRemoteAddr(conn)
 	if b.retries > 0 {
-		w.log.Debug("retry batch to conn:", b.lastSendServerAddr, ", workerID:", w.index, ", batchID:", b.batchID, ", logNum:", len(b.dataReqs))
+		w.log.Debug("retry batch to conn:", serverAddr, ", workerID:", w.index, ", batchID:", batchID, ", logNum:", logNum)
 	}
 	err = conn.AsyncWrite(b.buffer.Bytes(), func(c gnet.Conn, e error) error {
 		// 如果是UDP，回调无意义，参数c和e都是nil，具体可以查看AsyncWrite()的代码实现
@@ -499,39 +517,57 @@ func (w *worker) sendBatch(b *batchReq, retryOnFail bool) {
 		// 重要：因为是异步发送，AsyncWrite调用成功并不表示发送成功，尽管还没送成功，这里提前放入待确认队列，如果AsyncWrite最终发送失败，
 		// 再在AsyncWrite的回调onErr()中删除，如果AsyncWrite最终发送成功，则在收到响应后再删除
 		w.unackedBatchCount++
-		w.unackedBatches[b.batchID] = b
+		w.unackedBatches[batchID] = b
 	}
 }
 
-func (w *worker) handleSendFailed(b *sendFailedBatchReq) {
-	// 发送失败，从待确认列表中删除，并重传，重传的时候会放回来，因为只有V3协议会把请求放入w.unackedBatches，
-	// 这里检查一下是否是V3协议，避免删除其他数据
+func (w *worker) handleSendFailed(req *sendFailedBatchReq) {
+	batchID := req.batchID
+	if req.batch == nil || req.batch.batchID != batchID {
+		return
+	}
+
+	// V3 批次必须仍然是待确认的同一个对象，避免复用后的旧回调删错当前批次。
 	if w.options.isV3 {
-		delete(w.unackedBatches, b.batch.batchID)
+		if unacked, ok := w.unackedBatches[batchID]; !ok || unacked != req.batch {
+			return
+		}
+		delete(w.unackedBatches, batchID)
 	}
-	if b.retry {
-		w.backoffRetry(context.Background(), b.batch)
-	} else {
-		b.batch.done(errConnWriteFailed)
+
+	if req.retry && w.getState() == stateReady {
+		w.backoffRetry(context.Background(), req.batch)
+		return
 	}
+
+	// When closing, retry is disabled. Use doneBatch instead of batch.done so
+	// any pending retry timer for this batch is canceled and removed too.
+	w.doneBatch(batchID, req.batch, errConnWriteFailed)
 }
 
 func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
+	batchID := batch.batchID
+	if _, ok := w.retryingBatches[batchID]; ok {
+		return
+	}
+
 	if batch.retries >= w.options.MaxRetries {
-		batch.done(errSendTimeout)
+		w.doneBatch(batchID, batch, errSendTimeout)
 		// w.log.Debug("to many reties, batch done:", batch.batchID)
 		return
 	}
 
-	// 已经处于关闭状态
-	if w.getState() == stateClosed {
+	// 已经处于关闭状态或正在关闭，不再启动新的重试退避
+	if w.getState() != stateReady {
 		w.log.Warn("worker is closed when we are going to retry")
-		batch.done(errSendTimeout)
+		w.doneBatch(batchID, batch, errSendTimeout)
 		return
 	}
 
 	batch.retries++
-	go func() {
+	retryCtx, cancel := context.WithCancel(ctx)
+	w.retryingBatches[batchID] = &retryingBatch{batch: batch, cancel: cancel}
+	go func(batchID string, batch *batchReq, retries int) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				w.log.Error("panic:", rec)
@@ -548,38 +584,72 @@ func (w *worker) backoffRetry(ctx context.Context, batch *batchReq) {
 			Randomization:   0.2,
 		}
 
-		waitTime := backoff.Next(batch.retries)
+		waitTime := backoff.Next(retries)
+		timer := time.NewTimer(waitTime)
+		defer timer.Stop()
 
 		select {
-		case <-time.After(waitTime):
-			// 再次检查是否已经处于关闭状态
-			if w.getState() == stateClosed {
+		case <-timer.C:
+			// 再次检查是否已经处于关闭状态或正在关闭
+			if w.getState() != stateReady {
 				w.log.Warn("worker is closed when we are going to retry")
-				batch.done(errSendTimeout)
+				w.doneBatchAsync(batchID, batch, errSendTimeout)
 				return
 			}
 
 			// 放入重试队列。检查 state 与发送之间存在 TOCTOU 窗口，retryBatches 可能已被
-			// closeAll() 关闭，safeSend 兜底 panic；发送失败说明已关闭，done 掉 batch 释放资源
-			// （done 已幂等，重复调用安全）。
+			// closeAll() 关闭，safeSend 兜底 panic；发送失败时异步通知 worker 主循环 done batch。
 			w.log.Debug("put to retry...")
-			if !safeSend(w, w.retryBatches, batch) {
-				batch.done(errSendTimeout)
+			if !safeSend(w, w.retryBatches, &retryBatchReq{batchID: batchID, batch: batch}) {
+				w.doneBatchAsync(batchID, batch, errSendTimeout)
+				return
 			}
-		case <-ctx.Done():
-			// 进程退出
-			w.log.Warn("app exit when we are going to retry")
-			batch.done(errSendTimeout)
+		case <-retryCtx.Done():
+			return
 		}
-	}()
+	}(batchID, batch, batch.retries)
 }
 
-func (w *worker) handleRetry(batch *batchReq, retryOnFail bool) {
+func (w *worker) doneBatch(batchID string, batch *batchReq, err error) {
+	if batch == nil || batch.batchID != batchID {
+		return
+	}
+
+	if unacked, ok := w.unackedBatches[batchID]; ok {
+		if unacked != batch {
+			return
+		}
+		delete(w.unackedBatches, batchID)
+	}
+
+	if retrying, ok := w.retryingBatches[batchID]; ok {
+		if retrying.batch != batch {
+			return
+		}
+		retrying.cancel()
+		delete(w.retryingBatches, batchID)
+	}
+
+	batch.done(err)
+}
+
+func (w *worker) doneBatchAsync(batchID string, batch *batchReq, err error) {
+	safeSend(w, w.doneBatches, &doneBatchReq{batchID: batchID, batch: batch, err: err})
+}
+
+func (w *worker) handleRetry(req *retryBatchReq, retryOnFail bool) {
+	retrying, ok := w.retryingBatches[req.batchID]
+	if !ok || retrying.batch != req.batch {
+		return
+	}
+	retrying.cancel()
+	delete(w.retryingBatches, req.batchID)
+
 	// 重试
 	w.metrics.incRetry(w.indexStr)
-	w.log.Debug("retry batch...", ", workerID:", w.index, ", batchID:", batch.batchID,
-		", retries:", batch.retries, ", lastServerAddr:", batch.lastSendServerAddr)
-	w.sendBatch(batch, retryOnFail)
+	w.log.Debug("retry batch...", ", workerID:", w.index, ", batchID:", req.batchID,
+		", retries:", req.batch.retries, ", lastServerAddr:", req.batch.lastSendServerAddr)
+	w.sendBatch(req.batch, retryOnFail)
 }
 
 func (w *worker) handleBatchTimeout() {
@@ -599,12 +669,8 @@ func (w *worker) handleSendTimeout() {
 			w.log.Warn("worker[", w.index, "] send timeout, resend it now, batchID:", batchID,
 				", lastSendTime:", batch.lastSendTime.UnixMilli(), ", now:", time.Now().UnixMilli(),
 				", timeout option:", w.options.SendTimeout, ", serverAddr:", batch.lastSendServerAddr)
-			// 放入重试队列
-			// w.retryBatches <- batch
-			w.backoffRetry(context.Background(), batch)
-			// 因为重传的时候会再次放入w.unackedBatches，这里先删除
-			// 且重传是在另一个协程里，这里不删除的话响应会来时batch会done掉并释放资源，重传的时候可能会异常，所以也要先删除
 			delete(w.unackedBatches, batchID)
+			w.backoffRetry(context.Background(), batch)
 			w.metrics.incTimeout(w.indexStr)
 		}
 	}
@@ -618,19 +684,25 @@ func (w *worker) handleCleanMap() {
 
 	// w.log.Debug("clean map")
 	// 创建新的map，将旧数据复制过来
-	newMap := make(map[string]*batchReq)
+	newUnackedMap := make(map[string]*batchReq)
 	for k, v := range w.unackedBatches {
-		newMap[k] = v
+		newUnackedMap[k] = v
+	}
+
+	newRetryingMap := make(map[string]*retryingBatch)
+	for k, v := range w.retryingBatches {
+		newRetryingMap[k] = v
 	}
 
 	// 用新的map替换旧的map
-	w.unackedBatches = newMap
+	w.unackedBatches = newUnackedMap
+	w.retryingBatches = newRetryingMap
 	// 计数器清
 	w.unackedBatchCount = 0
 }
 
 // safeSend 向 ch 发送 v，并用 recover 兜底"向已关闭 channel 发送"导致的 panic。
-// 背景：onRsp/onErr(inCallback)/backoffRetry 都在 worker 主事件循环之外的协程里执行，
+// 背景：onRsp/onErr(inCallback)/backoffRetry/doneBatchAsync 都在 worker 主事件循环之外的协程里执行，
 // 它们"检查 getState()==stateClosed 再发送"与 handleClose 的 closeAll() 关闭 channel
 // 之间存在 TOCTOU 窗口，检查通过后 channel 可能已被关闭。此时直接发送会 panic。
 // 关闭期到达的这部分数据本就无法再被处理，捕获 panic 后丢弃并记录即可，返回是否发送成功。
@@ -657,23 +729,34 @@ func (w *worker) onRsp(rsp *batchRsp) {
 func (w *worker) handleRsp(rsp *batchRsp) {
 	batchID := rsp.batchID
 	batch, ok := w.unackedBatches[batchID]
-	if !ok {
-		// w.log.Debug("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
-		w.metrics.incError(errNoMatchReq4Rsp.strCode)
+	if ok {
+		// w.log.Debug("worker[", w.index, "] batch done:", batchID)
+		// 释放资源
+		if rsp.code == 0 {
+			w.doneBatch(batchID, batch, nil)
+		} else {
+			w.log.Warn("send succeed but got error code:", rsp.code, ", msg:", rsp.msg,
+				", batchID:", batchID, ", workerID:", w.index, ", serverAddr:", batch.lastSendServerAddr)
+			w.doneBatch(batchID, batch, errServerError)
+		}
 		return
 	}
 
-	// w.log.Debug("worker[", w.index, "] batch done:", batchID)
-	// 释放资源
-	if rsp.code == 0 {
-		batch.done(nil)
-	} else {
-		w.log.Warn("send succeed but got error code:", rsp.code, ", msg:", rsp.msg,
-			", batchID:", batchID, ", workerID:", w.index, ", serverAddr:", batch.lastSendServerAddr)
-		batch.done(errServerError)
+	retrying, ok := w.retryingBatches[batchID]
+	if ok {
+		batch = retrying.batch
+		if rsp.code == 0 {
+			w.doneBatch(batchID, batch, nil)
+		} else {
+			w.log.Warn("send succeed but got error code:", rsp.code, ", msg:", rsp.msg,
+				", batchID:", batchID, ", workerID:", w.index, ", serverAddr:", batch.lastSendServerAddr)
+			w.doneBatch(batchID, batch, errServerError)
+		}
+		return
 	}
 
-	delete(w.unackedBatches, batchID)
+	// w.log.Debug("worker[", w.index, "] batch not found in unackedBatches map:", batchID)
+	w.metrics.incError(errNoMatchReq4Rsp.strCode)
 }
 
 func (w *worker) close() {
@@ -722,10 +805,21 @@ func (w *worker) handleClose(req *closeReq) {
 		w.sendBatch(batch, false) // 失败不再重试
 	}
 
+	for i := 0; i < len(w.doneBatches); i++ {
+		d := <-w.doneBatches
+		w.doneBatch(d.batchID, d.batch, d.err)
+	}
+
 	// 因为是异步发送，在这之前发送出去失败的在回调中还有可能会写w.retryBatches，这里不能直接关闭它
 	for i := 0; i < len(w.retryBatches); i++ {
 		r := <-w.retryBatches
 		w.handleRetry(r, false) // 失败不再重试
+	}
+
+	for batchID, retrying := range w.retryingBatches {
+		retrying.cancel()
+		delete(w.retryingBatches, batchID)
+		w.sendBatch(retrying.batch, false) // 失败不再重试
 	}
 
 	// 此时，只有w.unackedBatches中有数据，这些数据还没有收到响应，给他们注册一个回调，
@@ -744,9 +838,11 @@ func (w *worker) handleClose(req *closeReq) {
 		w.client.putConn(w.getConn(), nil)
 		// 关闭命令管道
 		close(w.cmdChan)
-		// 设置为关闭状态，此后，w.retryBatches/w.sendFailedBatches/w.responseBatches都不再可写，否则会panic
+		// 设置为关闭状态，此后，w.doneBatches/w.retryBatches/w.sendFailedBatches/w.responseBatches都不再可写，否则会panic
 		// 所以，写这些管道的代码之前，要先检查一下当前的状态是不是stateClosed，是的话就不能再写了
 		w.setState(stateClosed)
+		// 关闭完成管道
+		close(w.doneBatches)
 		// 关闭重试管道
 		close(w.retryBatches)
 		// 关闭发送失败管道
