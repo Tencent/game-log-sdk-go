@@ -334,12 +334,21 @@ func (c *client) Close() {
 			w.close()
 		}
 
-		if c.netClient != nil {
-			_ = c.netClient.Stop()
-		}
-
+		// The connection pool must be closed before netClient. Once
+		// netClient.Stop() returns, gnet's event-loops have all exited, so any
+		// Dial started afterwards would block forever inside
+		// gnet.Client.EnrollContext waiting for connection registration (there
+		// is no event-loop left to process the registration task), leaking a
+		// goroutine. connPool.Close() waits (with a bound) for in-flight dials
+		// to finish first, to avoid dials entering EnrollContext after
+		// netClient has stopped; for a Dialer that hangs forever, Close still
+		// returns after the timeout.
 		if c.connPool != nil {
 			c.connPool.Close()
+		}
+
+		if c.netClient != nil {
+			_ = c.netClient.Stop()
 		}
 	})
 }

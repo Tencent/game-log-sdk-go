@@ -18,6 +18,11 @@ import (
 const (
 	defaultConnCloseDelay = 2 * time.Minute
 	defaultCmdChanSize    = 4096
+	// defaultCloseDialWait bounds how long Close waits for the dials that are
+	// already in flight. Dials normally return quickly because the Dialer
+	// applies its own connect timeout, but a hung Dialer must not block Close
+	// forever.
+	defaultCloseDialWait = 5 * time.Second
 )
 
 // error variables
@@ -182,6 +187,9 @@ type connPool struct {
 	closeDone chan struct{}
 	closeOnce sync.Once
 	closed    atomic.Bool
+	dialWG    sync.WaitGroup
+	enqueueMu sync.Mutex
+	enqueueWG sync.WaitGroup
 
 	size               int
 	index              uint64
@@ -294,7 +302,14 @@ func (p *connPool) OnConnClosed(conn gnet.Conn, err error) {
 // Close 关闭连接池，释放资源
 func (p *connPool) Close() {
 	p.closeOnce.Do(func() {
+		// Stop admitting new enqueue operations, then wait for every operation
+		// admitted before closing to finish. Holding the same mutex around the
+		// closed transition and enqueueWG.Add prevents Add from racing with Wait.
+		p.enqueueMu.Lock()
 		p.closed.Store(true)
+		p.enqueueMu.Unlock()
+		p.enqueueWG.Wait()
+
 		done := make(chan struct{})
 		cmd := poolCmd{kind: poolCmdClose, done: done}
 		select {
@@ -305,17 +320,59 @@ func (p *connPool) Close() {
 			<-done
 		case <-p.closeDone:
 		}
+
+		// Wait for the goroutines spawned by startDial to finish. This
+		// matters because the caller may stop the underlying gnet client right
+		// after Close returns: a dial still in flight would then block forever
+		// inside gnet, waiting to be registered with an event-loop that no
+		// longer exists. The wait is bounded so that a Dialer stuck in connect
+		// cannot block Close indefinitely.
+		if !waitWithTimeout(&p.dialWG, defaultCloseDialWait) {
+			p.log.Warn("timed out waiting for in-flight dials during close")
+		}
 	})
 }
 
+// waitWithTimeout waits for wg, giving up after timeout.
+func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (p *connPool) enqueue(cmd poolCmd, onDrop func()) {
+	p.enqueueMu.Lock()
+	if p.closed.Load() {
+		p.enqueueMu.Unlock()
+		if onDrop != nil {
+			onDrop()
+		}
+		return
+	}
+	p.enqueueWG.Add(1)
+	p.enqueueMu.Unlock()
+
 	select {
 	case p.cmdCh <- cmd:
+		p.enqueueWG.Done()
 		return
 	default:
 	}
 
 	go func() {
+		defer p.enqueueWG.Done()
+
 		select {
 		case p.cmdCh <- cmd:
 		case <-p.closeDone:
@@ -674,7 +731,10 @@ func (p *connPool) startDial(addr string, reply chan getResult) {
 		return
 	}
 	p.pendingDials[addr]++
+	p.dialWG.Add(1)
 	go func() {
+		defer p.dialWG.Done()
+
 		if p.closed.Load() {
 			if reply != nil {
 				reply <- getResult{err: ErrPoolClosed}

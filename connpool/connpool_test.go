@@ -134,6 +134,18 @@ func (c *mockConn) SetWriteDeadline(time.Time) error { return nil }
 func (c *mockConn) SafeContext() any                 { return c.safeCtx.Load() }
 func (c *mockConn) SetSafeContext(ctx any)           { c.safeCtx.Store(ctx) }
 
+type blockingContextConn struct {
+	*mockConn
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingContextConn) SafeContext() any {
+	close(c.started)
+	<-c.release
+	return c.mockConn.SafeContext()
+}
+
 func newTestPool(t *testing.T, endpoints []string) (*connPool, *mockDialer) {
 	t.Helper()
 	dialer := &mockDialer{failFor: make(map[string]error)}
@@ -366,6 +378,50 @@ func TestCloseDuringDialClosesDialResult(t *testing.T) {
 		t.Fatal("Get during Close did not return")
 	}
 	waitFor(t, func() bool { return dialer.closedCount() >= 2 })
+}
+
+func TestOnConnClosedRacingCloseDoesNotEnqueue(t *testing.T) {
+	p, _ := newTestPool(t, []string{"127.0.0.1:1"})
+	conn := &blockingContextConn{
+		mockConn: &mockConn{remote: mockAddr("127.0.0.1:1")},
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	conn.SetSafeContext(ConnContext{Endpoint: "127.0.0.1:1"})
+
+	onClosedDone := make(chan struct{})
+	go func() {
+		p.OnConnClosed(conn, nil)
+		close(onClosedDone)
+	}()
+
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("OnConnClosed did not reach SafeContext")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		p.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked on an enqueue operation that was not admitted")
+	}
+
+	close(conn.release)
+	select {
+	case <-onClosedDone:
+	case <-time.After(time.Second):
+		t.Fatal("OnConnClosed did not return after Close")
+	}
+
+	if got := len(p.cmdCh); got != 0 {
+		t.Fatalf("cmdCh contains %d command(s) enqueued after Close", got)
+	}
 }
 
 // TestCloseDrainsQueuedDialResults makes sure that conns carried by dialResult
